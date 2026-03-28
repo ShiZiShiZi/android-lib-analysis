@@ -1,0 +1,31 @@
+INFO  2026-03-20T08:40:09 +443ms service=default version=1.2.25 args=["serve","--port","49464"] opencode
+INFO  2026-03-20T08:40:09 +1ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/config.json loading
+INFO  2026-03-20T08:40:09 +0ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/opencode.json loading
+INFO  2026-03-20T08:40:09 +4ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/opencode.jsonc loading
+INFO  2026-03-20T08:40:09 +330ms service=server method=GET path=/ request
+INFO  2026-03-20T08:40:09 +0ms service=server status=started method=GET path=/ request
+INFO  2026-03-20T08:40:09 +2ms service=default directory=/Users/yt/task/flutter_analysis creating instance
+INFO  2026-03-20T08:40:09 +0ms service=project directory=/Users/yt/task/flutter_analysis fromDirectory
+INFO  2026-03-20T08:40:09 +3ms service=db path=/Users/yt/task/flutter_analysis/.opencode_server/share/opencode/opencode.db opening database
+INFO  2026-03-20T08:40:09 +11ms service=db count=8 mode=bundled applying migrations
+INFO  2026-03-20T08:40:09 +8ms service=default directory=/Users/yt/task/flutter_analysis bootstrapping
+INFO  2026-03-20T08:40:09 +10ms service=config path=/Users/yt/task/flutter_analysis/.opencode/opencode.jsonc loading
+INFO  2026-03-20T08:40:09 +1ms service=config path=/Users/yt/task/flutter_analysis/.opencode/opencode.json loading
+INFO  2026-03-20T08:40:09 +9ms service=plugin name=CodexAuthPlugin loading internal plugin
+INFO  2026-03-20T08:40:09 +0ms service=plugin name=CopilotAuthPlugin loading internal plugin
+INFO  2026-03-20T08:40:09 +0ms service=plugin name=gitlabAuthPlugin loading internal plugin
+INFO  2026-03-20T08:40:09 +0ms service=plugin path=opencode-anthropic-auth@0.0.13 loading plugin
+INFO  2026-03-20T08:40:09 +18ms service=bus type=* subscribing
+INFO  2026-03-20T08:40:09 +0ms service=bus type=session.updated subscribing
+INFO  2026-03-20T08:40:09 +0ms service=bus type=message.updated subscribing
+INFO  2026-03-20T08:40:09 +0ms service=bus type=message.part.updated subscribing
+INFO  2026-03-20T08:40:09 +0ms service=bus type=session.diff subscribing
+INFO  2026-03-20T08:40:09 +0ms service=format init
+INFO  2026-03-20T08:40:09 +0ms service=bus type=file.edited subscribing
+INFO  2026-03-20T08:40:09 +0ms service=lsp serverIds=deno, typescript, vue, eslint, oxlint, biome, gopls, ruby-lsp, pyright, elixir-ls, zls, csharp, fsharp, sourcekit-lsp, rust, clangd, svelte, astro, jdtls, kotlin-ls, yaml-ls, lua-ls, php intelephense, prisma, dart, ocaml-lsp, bash, terraform, texlab, dockerfile, gleam, clojure-lsp, nixd, tinymist, haskell-language-server, julials enabled LSP servers
+INFO  2026-03-20T08:40:09 +0ms service=file.watcher init
+INFO  2026-03-20T08:40:09 +2ms service=scheduler id=snapshot.cleanup run
+INFO  2026-03-20T08:40:09 +0ms service=scheduler id=tool.truncation.cleanup run
+INFO  2026-03-20T08:40:09 +0ms service=bus type=command.executed subscribing
+INFO  2026-03-20T08:40:09 +0ms service=file.watcher platform=darwin backend=fs-events watcher backend
+INFO  2026-03-20T08:40:10 +724ms service=server status=completed duration=788 method=GET path=/ request

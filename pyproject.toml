@@ -1,0 +1,15 @@
+[project]
+name = "rn-analysis"
+version = "0.1.0"
+description = "Analyze React Native libraries for cloud services, payment, license, and dependencies"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn[standard]>=0.27.0",
+    "aiosqlite>=0.20.0",
+    "httpx>=0.27.0",
+    "jinja2>=3.1.0",
+    "python-multipart>=0.0.9",
+    "pandas>=2.0.0",
+    "openpyxl>=3.1.0",
+]

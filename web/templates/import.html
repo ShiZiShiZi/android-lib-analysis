@@ -1,0 +1,156 @@
+{% extends "base.html" %}
+{% block title %}批量导入 — RN Analyzer{% endblock %}
+{% block body_id %}page-import{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>批量导入库</h1>
+  <a href="/" class="btn btn-ghost">← 返回列表</a>
+</div>
+
+<div class="import-steps">
+
+  <div class="tab-selector" style="margin-bottom:20px; display:flex; gap:10px;">
+    <button class="btn btn-primary" id="tab-manual-btn" onclick="switchTab('manual')">手动输入</button>
+    <button class="btn btn-ghost" id="tab-excel-btn" onclick="switchTab('excel')">Excel 导入</button>
+  </div>
+
+  <div class="step-card" id="tab-manual">
+    <div class="step-header">
+      <span class="step-num">1</span>
+      <h2>输入库信息</h2>
+    </div>
+    <p class="hint">输入库名和 GitHub 地址。地址支持 monorepo 子目录：<code>https://github.com/expo/expo/tree/main/packages/expo-camera</code></p>
+    
+    <div class="form-grid" style="display:grid; gap:12px; margin:16px 0;">
+      <div>
+        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">库名称 *</label>
+        <input type="text" id="lib-name" placeholder="expo-camera" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
+      </div>
+      <div>
+        <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">GitHub 地址 *</label>
+        <input type="text" id="lib-git-url" placeholder="https://github.com/expo/expo/tree/main/packages/expo-camera" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
+      </div>
+    </div>
+    
+    <div class="step-actions">
+      <button class="btn btn-primary" onclick="addLibrary()">添加</button>
+      <button class="btn btn-success" onclick="importAll()">导入选中</button>
+    </div>
+    
+    <div id="pending-list" style="margin-top:20px;"></div>
+  </div>
+
+  <div class="step-card" id="tab-excel" style="display:none;">
+    <div class="step-header">
+      <span class="step-num">1</span>
+      <h2>Excel 导入</h2>
+    </div>
+    <p class="hint">
+      下载模板，填写库信息后上传。Excel 必须包含 <code>name</code> 和 <code>git_url</code> 列。
+    </p>
+    
+    <div class="step-actions">
+      <a href="/api/libraries/template" class="btn">下载模板</a>
+      <input type="file" id="excel-file" accept=".xlsx,.xls" style="display:none" onchange="uploadExcel(this)">
+      <button class="btn btn-primary" onclick="document.getElementById('excel-file').click()">上传 Excel</button>
+    </div>
+    
+    <div id="excel-result" style="margin-top:20px;"></div>
+  </div>
+
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let pendingLibraries = [];
+
+function switchTab(tab) {
+  document.getElementById('tab-manual').style.display = tab === 'manual' ? 'block' : 'none';
+  document.getElementById('tab-excel').style.display = tab === 'excel' ? 'block' : 'none';
+  document.getElementById('tab-manual-btn').className = tab === 'manual' ? 'btn btn-primary' : 'btn btn-ghost';
+  document.getElementById('tab-excel-btn').className = tab === 'excel' ? 'btn btn-primary' : 'btn btn-ghost';
+}
+
+function addLibrary() {
+  const name = document.getElementById('lib-name').value.trim();
+  const gitUrl = document.getElementById('lib-git-url').value.trim();
+  
+  if (!name || !gitUrl) {
+    showToast('请填写库名和 GitHub 地址', 'error');
+    return;
+  }
+  
+  pendingLibraries.push({ name, git_url: gitUrl });
+  renderPendingList();
+  
+  document.getElementById('lib-name').value = '';
+  document.getElementById('lib-git-url').value = '';
+}
+
+function renderPendingList() {
+  const el = document.getElementById('pending-list');
+  if (pendingLibraries.length === 0) {
+    el.innerHTML = '<p class="muted">暂无待导入的库</p>';
+    return;
+  }
+  
+  let html = '<table class="data-table"><thead><tr><th>库名</th><th>GitHub 地址</th><th>操作</th></tr></thead><tbody>';
+  pendingLibraries.forEach((lib, i) => {
+    html += `<tr>
+      <td>${lib.name}</td>
+      <td><a href="${lib.git_url}" target="_blank" style="font-size:12px;">${lib.git_url}</a></td>
+      <td><button class="btn btn-xs btn-danger" onclick="removeLibrary(${i})">删除</button></td>
+    </tr>`;
+  });
+  html += '</tbody></table>';
+  el.innerHTML = html;
+}
+
+function removeLibrary(index) {
+  pendingLibraries.splice(index, 1);
+  renderPendingList();
+}
+
+async function importAll() {
+  if (pendingLibraries.length === 0) {
+    showToast('请先添加库', 'error');
+    return;
+  }
+  
+  try {
+    const resp = await apiFetch('/api/libraries/import', 'POST', { libraries: pendingLibraries });
+    showToast(`成功导入 ${resp.imported.length} 个库`);
+    pendingLibraries = [];
+    renderPendingList();
+  } catch (e) {
+    showToast('导入失败：' + e.message, 'error');
+  }
+}
+
+async function uploadExcel(input) {
+  if (!input.files || !input.files[0]) return;
+  
+  const formData = new FormData();
+  formData.append('file', input.files[0]);
+  
+  try {
+    const resp = await fetch('/api/libraries/import-excel', { method: 'POST', body: formData });
+    const data = await resp.json();
+    
+    if (data.error) {
+      showToast(data.error, 'error');
+      return;
+    }
+    
+    let html = `<p class="success-text">成功导入 ${data.imported ? data.imported.length : 0} 个库</p>`;
+    document.getElementById('excel-result').innerHTML = html;
+  } catch (e) {
+    showToast('上传失败：' + e.message, 'error');
+  }
+  
+  input.value = '';
+}
+</script>
+{% endblock %}

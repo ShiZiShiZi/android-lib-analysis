@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}React Native Library Analyzer{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body id="{% block body_id %}page-default{% endblock %}">
+
+<nav class="navbar">
+  <a href="/" class="nav-brand">RN Analyzer</a>
+  <div class="nav-links">
+    <a href="/" class="nav-link">库列表</a>
+    <a href="/import" class="nav-link">批量导入</a>
+  </div>
+  <div class="nav-status" id="nav-status">
+    队列: <span id="nav-queue-size">0</span>
+    <span class="sep">|</span>
+    <span id="nav-current">空闲</span>
+  </div>
+</nav>
+
+<main class="main-content">
+  {% block content %}{% endblock %}
+</main>
+
+<div id="toast-container"></div>
+
+<script src="{{ static_v('app.js') }}"></script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

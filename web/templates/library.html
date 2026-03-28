@@ -1,0 +1,275 @@
+{% extends "base.html" %}
+{% block title %}{{ library.name }} — RN Analyzer{% endblock %}
+{% block body_id %}page-library{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <a href="/" class="breadcrumb">← 库列表</a>
+    <h1>{{ library.name }}</h1>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-primary" onclick="analyzeLibrary({{ library.id }})">开始分析</button>
+  </div>
+</div>
+
+<div class="info-card">
+  <div class="info-grid">
+    <div>
+      <label>名称</label>
+      <span>{{ library.name }}</span>
+    </div>
+    <div>
+      <label>克隆状态</label>
+      {% set dl_labels = {'pending':'待克隆','running':'克隆中','done':'已克隆','failed':'克隆失败','cleaned':'已清理'} %}
+      <span class="badge badge-{{ library.dl_status }}">{{ dl_labels.get(library.dl_status, library.dl_status) }}</span>
+    </div>
+    <div class="full-width">
+      <label>GitHub</label>
+      {% if library.git_url %}
+        <a href="{{ library.git_url }}" target="_blank" style="word-break:break-all;">{{ library.git_url }}</a>
+      {% else %}
+        <span class="muted">—</span>
+      {% endif %}
+    </div>
+    <div>
+      <label>子路径</label>
+      <span>{{ library.sub_path or '—' }}</span>
+    </div>
+    {% if library.commit_sha %}
+    <div>
+      <label>Commit</label>
+      <span>{{ library.commit_sha }}</span>
+    </div>
+    {% endif %}
+    {% if library.dl_error %}
+    <div class="full-width">
+      <label>错误</label>
+      <pre class="error-pre">{{ library.dl_error }}</pre>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+{% if latest_run and latest_run.status == 'done' and result %}
+<div class="result-summary-card" style="margin-top:20px; padding:16px; background:#f8f9fa; border-radius:8px;">
+  <h3 style="margin:0 0 12px 0; font-size:14px;">📊 分析结论</h3>
+  <div style="display:flex; flex-wrap:wrap; gap:8px;">
+    {% set cs = result.get('cloud_services', {}) %}
+    {% set pay = result.get('payment', {}) %}
+    {% set lic = result.get('license', {}) %}
+    {% set mp = result.get('mobile_platform', {}) %}
+    
+    <span style="padding:4px 10px; background:#e3f2fd; color:#1976d2; border-radius:16px; font-size:13px;">
+      ☁️ {{ '纯端' if cs.get('topology')=='pure_edge' else '中心化' if cs.get('topology')=='centralized' else '去中心化' if cs.get('topology')=='decentralized' else '未知' }}
+    </span>
+    <span style="padding:4px 10px; background:{% if pay.get('involves_payment') %}#ffebee{% else %}#e8f5e9{% endif %}; color:{% if pay.get('involves_payment') %}#c62828{% else %}#2e7d32{% endif %}; border-radius:16px; font-size:13px;">
+      {{ '💰 付费' if pay.get('involves_payment') else '✅ 免费' }}
+    </span>
+    <span style="padding:4px 10px; background:#f3e5f5; color:#7b1fa2; border-radius:16px; font-size:13px;">
+      📄 {{ lic.get('declared_license') or '未知' }}
+    </span>
+    <span style="padding:4px 10px; background:#fff3e0; color:#ef6c00; border-radius:16px; font-size:13px;">
+      📱 {{ mp.get('label', '通用') }}
+    </span>
+  </div>
+</div>
+{% endif %}
+
+<div class="tab-bar" style="margin-top:24px; display:flex; gap:4px; border-bottom:2px solid #e0e0e0;">
+  <button class="tab-btn active" data-tab="result" onclick="switchTab('result')">📋 分析结果</button>
+  <button class="tab-btn" data-tab="thinking" onclick="switchTab('thinking')">🧠 思考过程</button>
+</div>
+
+<style>
+.tab-btn {
+  padding:10px 20px;
+  border:none;
+  background:transparent;
+  cursor:pointer;
+  font-size:14px;
+  color:#666;
+  border-bottom:2px solid transparent;
+  margin-bottom:-2px;
+}
+.tab-btn.active {
+  color:#1976d2;
+  border-bottom-color:#1976d2;
+  font-weight:600;
+}
+.tab-btn:hover { color:#1976d2; }
+.tab-content { display:none; }
+.tab-content.active { display:block; }
+</style>
+
+<div id="tab-result" class="tab-content active">
+{% if latest_run %}
+<div class="run-card">
+  <div class="run-header">
+    {% set run_labels = {'pending':'队列中','running':'分析中','done':'已完成','failed':'失败'} %}
+    <span class="badge badge-{{ latest_run.status }}">{{ run_labels.get(latest_run.status, latest_run.status) }}</span>
+    <span class="muted">Run #{{ latest_run.id }}</span>
+    {% if latest_run.status == 'running' %}
+      <span class="timer" id="run-timer">--:--</span>
+    {% elif latest_run.duration_ms %}
+      <span class="muted" style="font-size:12px;">耗时 {{ (latest_run.duration_ms / 1000) | round(1) }}s</span>
+    {% endif %}
+    <button class="btn btn-xs" onclick="rerun({{ latest_run.id }})">重新分析</button>
+  </div>
+  
+  <div style="font-size:12px; color:#666; margin-bottom:12px;">
+    创建: {{ latest_run.created_at | local_time }}
+    {% if latest_run.started_at %}
+      | 开始: {{ latest_run.started_at | local_time }}
+    {% endif %}
+    {% if latest_run.finished_at %}
+      | 完成: {{ latest_run.finished_at | local_time }}
+    {% endif %}
+  </div>
+
+  {% if latest_run.status == 'failed' %}
+  <div style="margin:16px 0; padding:16px; background:#ffebee; border-radius:8px;">
+    <h4 style="margin:0 0 8px 0; color:#c62828;">分析失败</h4>
+    <p style="margin:0; color:#b71c1c;">{{ latest_run.error_msg or '未知错误' }}</p>
+  </div>
+  {% endif %}
+
+  {% if result %}
+  <div style="margin-top:16px;">
+    {% set sections = [
+      ('cloud_services', '☁️ 云服务拓扑'),
+      ('payment', '💰 付费检测'),
+      ('license', '📄 许可证'),
+      ('mobile_platform', '📱 移动平台'),
+      ('features', '✨ 功能特性'),
+      ('ecosystem', '🌐 生态识别'),
+      ('dependency_analysis', '📦 依赖分析'),
+      ('code_stats', '📊 代码统计'),
+    ] %}
+    {% for key, label in sections %}
+      {% set section = result.get(key) %}
+      {% if section %}
+      <details style="margin-bottom:8px; border:1px solid #e0e0e0; border-radius:6px;">
+        <summary style="padding:10px 14px; background:#f5f5f5; cursor:pointer; font-size:13px;">{{ label }}</summary>
+        <pre style="margin:0; padding:14px; font-size:12px; overflow-x:auto; max-height:400px; background:#fafafa;">{{ section | to_json_pretty }}</pre>
+      </details>
+      {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% if latest_run.status in ('running', 'pending') %}
+  <div style="margin-top:16px;">
+    <h3 style="font-size:14px;">📜 实时日志</h3>
+    <pre id="run-log" style="max-height:400px; min-height:200px; padding:12px; background:#263238; color:#aed581; border-radius:4px; font-size:12px; overflow:auto;"></pre>
+  </div>
+  {% endif %}
+</div>
+{% else %}
+<div class="empty-state">
+  <p>还未分析，点击「开始分析」按钮。</p>
+</div>
+{% endif %}
+</div>
+
+<div id="tab-thinking" class="tab-content">
+  <div style="padding:16px; background:#f8f9fa; border-radius:8px;">
+    <h3 style="margin:0 0 12px 0; font-size:14px;">🧠 AI 思考过程</h3>
+    {% if latest_run and latest_run.status in ('done', 'running') %}
+    <pre id="thinking-log" style="max-height:600px; padding:14px; background:#263238; color:#eceff1; border-radius:6px; font-size:12px; overflow:auto; white-space:pre-wrap;">{% if latest_run.status == 'running' %}正在分析中，思考过程将实时显示...{% else %}加载中...{% endif %}</pre>
+    {% else %}
+    <p style="color:#666;">分析开始后可查看思考过程。</p>
+    {% endif %}
+  </div>
+</div>
+
+{% if runs | length > 1 %}
+<h2 style="margin-top:24px;">历史运行记录</h2>
+<table class="data-table">
+  <thead>
+    <tr><th>Run ID</th><th>时间</th><th>状态</th><th>操作</th></tr>
+  </thead>
+  <tbody>
+  {% for r in runs[1:] %}
+    <tr>
+      <td>#{{ r.id }}</td>
+      <td>{{ r.created_at | local_time }}</td>
+      <td><span class="badge badge-{{ r.status }}">{{ r.status }}</span></td>
+      <td><button class="btn btn-xs" onclick="rerun({{ r.id }})">重跑</button></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endif %}
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+window.PAGE_DATA = {
+  libraryId: {{ library.id }},
+  runId: {{ latest_run.id if latest_run else 'null' }},
+  runStatus: '{{ latest_run.status if latest_run else "" }}',
+};
+
+if (window.PAGE_DATA.runStatus === 'running') {
+  startRunLogPoll(PAGE_DATA.runId);
+  startRunStatusPoll(PAGE_DATA.runId);
+  startThinkingPoll(PAGE_DATA.runId);
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+  document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+  document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
+  document.getElementById(`tab-${tabName}`).classList.add('active');
+  
+  if (tabName === 'thinking' && PAGE_DATA.runId) {
+    loadThinkingLog(PAGE_DATA.runId);
+  }
+}
+
+let thinkingPollInterval = null;
+function startThinkingPoll(runId) {
+  if (thinkingPollInterval) return;
+  thinkingPollInterval = setInterval(() => {
+    loadThinkingLog(runId, true);
+  }, 2000);
+}
+
+async function loadThinkingLog(runId, isPolling = false) {
+  const el = document.getElementById('thinking-log');
+  if (!el) return;
+  if (isPolling && el.dataset.complete) return;
+  try {
+    const r = await apiFetch(`/api/runs/${runId}/thinking`);
+    const content = r.thinking || '';
+    if (content) {
+      el.textContent = content;
+      if (PAGE_DATA.runStatus === 'done') {
+        el.dataset.complete = '1';
+        if (thinkingPollInterval) clearInterval(thinkingPollInterval);
+      }
+    }
+  } catch(e) {
+    if (!isPolling) el.textContent = '加载失败：' + e.message;
+  }
+}
+
+async function analyzeLibrary(id) {
+  try {
+    const r = await apiFetch(`/api/libraries/${id}/analyze`, 'POST', {});
+    showToast(r.run_id ? `分析任务已加入队列` : '正在克隆后分析…');
+    setTimeout(() => location.reload(), 800);
+  } catch(e) { showToast('分析失败：' + e.message, 'error'); }
+}
+
+async function rerun(runId) {
+  try {
+    const r = await apiFetch(`/api/runs/${runId}/rerun`, 'POST', {});
+    showToast('已加入队列');
+    setTimeout(() => location.reload(), 800);
+  } catch(e) { showToast('重跑失败：' + e.message, 'error'); }
+}
+</script>
+{% endblock %}

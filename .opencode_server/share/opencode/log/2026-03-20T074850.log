@@ -1,0 +1,4 @@
+INFO  2026-03-20T07:48:50 +301ms service=default version=1.2.25 args=["serve","--port","50048"] opencode
+INFO  2026-03-20T07:48:50 +1ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/config.json loading
+INFO  2026-03-20T07:48:50 +0ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/opencode.json loading
+INFO  2026-03-20T07:48:50 +4ms service=config path=/Users/yt/task/flutter_analysis/.opencode_server/config/opencode/opencode.jsonc loading
