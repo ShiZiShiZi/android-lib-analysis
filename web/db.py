@@ -5,7 +5,7 @@ from typing import Optional
 
 import aiosqlite
 
-DB_PATH = Path(__file__).parent.parent / "rn_libraries.db"
+DB_PATH = Path(__file__).parent.parent / "android_libraries.db"
 
 _db: Optional[aiosqlite.Connection] = None
 

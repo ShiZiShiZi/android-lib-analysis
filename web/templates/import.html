@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}批量导入 — RN Analyzer{% endblock %}
+{% block title %}批量导入 — Android Analyzer{% endblock %}
 {% block body_id %}page-import{% endblock %}
 
 {% block content %}
@@ -20,16 +20,16 @@
       <span class="step-num">1</span>
       <h2>输入库信息</h2>
     </div>
-    <p class="hint">输入库名和 GitHub 地址。地址支持 monorepo 子目录：<code>https://github.com/expo/expo/tree/main/packages/expo-camera</code></p>
+    <p class="hint">输入库名和 GitHub 地址。地址支持 monorepo 子目录：<code>https://github.com/square/okhttp/tree/master/okhttp-bom</code></p>
     
     <div class="form-grid" style="display:grid; gap:12px; margin:16px 0;">
       <div>
         <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">库名称 *</label>
-        <input type="text" id="lib-name" placeholder="expo-camera" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
+        <input type="text" id="lib-name" placeholder="okhttp" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
       </div>
       <div>
         <label style="display:block; margin-bottom:4px; font-size:13px; color:#666;">GitHub 地址 *</label>
-        <input type="text" id="lib-git-url" placeholder="https://github.com/expo/expo/tree/main/packages/expo-camera" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
+        <input type="text" id="lib-git-url" placeholder="https://github.com/square/okhttp" style="width:100%; padding:8px 12px; border:1px solid #ddd; border-radius:6px;">
       </div>
     </div>
     

@@ -1,23 +1,32 @@
-"""串行分析任务队列。"""
+"""串行分析任务队列。
+
+使用多 server 模式：
+- 10 个 opencode serve 实例
+- 每个任务完成后自动重启 server
+- 确保 session 上下文干净，内存不累积
+"""
 import asyncio
 import json
 import logging
-from collections import defaultdict
+import time
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
-from src.analyzer import LOG_DIR, OUTPUT_DIR, run_full_analysis
+from src.opencode_client import LOG_DIR, run_full_analysis
 from src.github_downloader import REPOS_DIR, get_package_path
 from src.github_parser import parse_github_url
+from src.server_pool import ServerPool, get_server_pool
 from web import db as database
 
 logger = logging.getLogger(__name__)
 
 CONCURRENCY = 10
+TASK_TIMEOUT = 1800
 
 running_runs: set[int] = set()
-_repo_refs: dict[str, int] = defaultdict(int)  # repo_dir_name -> ref count
-_repo_locks: dict[str, asyncio.Lock] = {}      # repo_dir_name -> lock
+run_session_map: dict[int, tuple[str, str]] = {}
+run_last_update: dict[int, float] = {}
 
 
 class AnalysisQueue:
@@ -82,6 +91,7 @@ class AnalysisQueue:
         except Exception as e:
             logger.error(f"更新 run {run_id} 为 running 失败: {e}")
             return
+        run_last_update[run_id] = time.time()
 
         git_url = library.get("git_url")
         sub_path = library.get("sub_path")
@@ -110,26 +120,7 @@ class AnalysisQueue:
                 logger.error(f"更新 run {run_id} 失败: {e}")
             return
 
-        # 增加仓库引用计数（必须在 try-finally 中确保平衡）
-        lock = _repo_locks.setdefault(repo_info.repo_dir_name, asyncio.Lock())
-        async with lock:
-            _repo_refs[repo_info.repo_dir_name] += 1
-
-        try:
-            package_path = get_package_path(repo_dir, sub_path)
-        except Exception as e:
-            try:
-                await database.update_run(run_id, "failed", error_msg=f"Package path not found: {e}")
-            except Exception as db_e:
-                logger.error(f"更新 run {run_id} 失败: {db_e}")
-            # 减少引用计数（异常路径）
-            async with lock:
-                _repo_refs[repo_info.repo_dir_name] -= 1
-                if _repo_refs[repo_info.repo_dir_name] <= 0:
-                    del _repo_refs[repo_info.repo_dir_name]
-            return
-
-        # 创建日志目录
+        package_path = get_package_path(repo_dir, sub_path)
         log_dir = LOG_DIR / str(run_id)
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
@@ -138,52 +129,54 @@ class AnalysisQueue:
                 await database.update_run(run_id, "failed", error_msg=f"Cannot create log dir: {e}")
             except Exception as db_e:
                 logger.error(f"更新 run {run_id} 失败: {db_e}")
-            async with lock:
-                _repo_refs[repo_info.repo_dir_name] -= 1
-                if _repo_refs[repo_info.repo_dir_name] <= 0:
-                    del _repo_refs[repo_info.repo_dir_name]
             return
+
+        log_path = log_dir / "analysis.log"
+        log_fh = open(log_path, "w", encoding="utf-8", buffering=8192)
+
+        async def on_log(line: str) -> None:
+            log_fh.write(line + "\n")
+            run_last_update[run_id] = time.time()
+
+        async def on_session_created(session_id: str) -> None:
+            run_session_map[run_id] = (session_id, server.url if server else "")
+            run_last_update[run_id] = time.time()
 
         running_runs.add(run_id)
         report = None
+        session_id = None
         run_error = None
-        result = None
+        server = None
 
         try:
-            result = await run_full_analysis(
-                repo_path=str(repo_dir),
-                sub_path=sub_path,
-                git_url=library_name,
-                log_dir=log_dir,
+            pool = await get_server_pool()
+            server = await pool.get_server()
+            logger.info("[run:%d] 使用 server:%d (端口 %d)", run_id, server.db_index, server.port)
+
+            report, session_id = await asyncio.wait_for(
+                run_full_analysis(
+                    repo_path=str(repo_dir),
+                    git_url=library_name,
+                    sub_path=sub_path,
+                    on_log=on_log,
+                    on_session_created=on_session_created,
+                    server_url=server.url
+                ),
+                timeout=TASK_TIMEOUT
             )
-            report = result.report
-
-            # 写入 output/{name}.json（需要处理磁盘满等异常）
-            try:
-                OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-                safe_name = library_name.replace("/", "_").replace("@", "")
-                output_file = OUTPUT_DIR / f"{safe_name}.json"
-                output_data = {
-                    "library": {
-                        "name": library_name,
-                        "git_url": git_url,
-                        "sub_path": sub_path,
-                        "commit_sha": library.get("commit_sha"),
-                        "analyzed_at": datetime.now(timezone.utc).isoformat(),
-                    },
-                    "result": report,
-                }
-                output_json = json.dumps(output_data, ensure_ascii=False, indent=2)
-                output_file.write_text(output_json, encoding="utf-8")
-                logger.info(f"结果已写入: {output_file}")
-            except (IOError, OSError) as e:
-                logger.error(f"写入结果文件失败: {e}")
-                run_error = f"Output file write failed: {str(e)[:500]}"
-
+        except asyncio.TimeoutError:
+            run_error = f"任务超时（{TASK_TIMEOUT//60}分钟）"
         except Exception as exc:
             run_error = str(exc)[:500]
         finally:
+            log_fh.close()
             running_runs.discard(run_id)
+            run_last_update.pop(run_id, None)
+            run_session_map.pop(run_id, None)
+
+            if server:
+                pool = await get_server_pool()
+                pool.release_server(server)
 
         if run_error:
             try:

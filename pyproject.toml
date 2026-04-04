@@ -1,7 +1,7 @@
 [project]
-name = "rn-analysis"
+name = "android-analysis"
 version = "0.1.0"
-description = "Analyze React Native libraries for cloud services, payment, license, and dependencies"
+description = "Analyze Android native libraries for cloud services, payment, license, and dependencies"
 requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.110.0",

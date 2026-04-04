@@ -1,11 +1,11 @@
 {% extends "base.html" %}
-{% block title %}库列表 — RN Analyzer{% endblock %}
+{% block title %}库列表 — Android Analyzer{% endblock %}
 {% block body_id %}page-index{% endblock %}
 
 {% block content %}
 
 {% macro dl_badge(l) %}
-  {% set labels = {'pending':'待克隆','running':'克隆中','done':'已克隆','failed':'克隆失败','cleaned':'已清理'} %}
+  {% set labels = {'pending':'待下载','running':'下载中','done':'已下载','failed':'下载失败','cleaned':'已清理'} %}
   <span class="badge badge-{{ l.dl_status }}">{{ labels.get(l.dl_status, l.dl_status) }}</span>
 {% endmacro %}
 
@@ -30,7 +30,7 @@
 
 <div class="status-card">
   <div class="status-card-row">
-    <span>克隆中：<strong id="dl-running-text">{{ dl_running_count }}</strong> 个</span>
+    <span>下载中：<strong id="dl-running-text">{{ dl_running_count }}</strong> 个</span>
     <span>队列：<strong id="queue-size-text">{{ queue_size }}</strong> 个</span>
     <button class="btn btn-xs" onclick="openTaskPanel()">任务列表</button>
   </div>
@@ -54,10 +54,10 @@
   <div class="filter-group" style="margin-left: 16px; padding-left: 16px; border-left: 1px solid #e0e0e0;">
     <span class="filter-label">克隆状态:</span>
     <a href="/?q={{ q }}&dl=all&run={{ run }}"       class="filter-btn {% if dl=='all' %}active{% endif %}">全部<span id="fc-dl-all"></span></a>
-    <a href="/?q={{ q }}&dl=running&run={{ run }}"   class="filter-btn {% if dl=='running' %}active{% endif %}">克隆中<span id="fc-dl-running"></span></a>
-    <a href="/?q={{ q }}&dl=done&run={{ run }}"      class="filter-btn {% if dl=='done' %}active{% endif %}">已克隆<span id="fc-dl-done"></span></a>
+    <a href="/?q={{ q }}&dl=running&run={{ run }}"   class="filter-btn {% if dl=='running' %}active{% endif %}">下载中<span id="fc-dl-running"></span></a>
+    <a href="/?q={{ q }}&dl=done&run={{ run }}"      class="filter-btn {% if dl=='done' %}active{% endif %}">已下载<span id="fc-dl-done"></span></a>
     <a href="/?q={{ q }}&dl=failed&run={{ run }}"    class="filter-btn {% if dl=='failed' %}active{% endif %}">失败<span id="fc-dl-failed"></span></a>
-    <a href="/?q={{ q }}&dl=pending&run={{ run }}"   class="filter-btn {% if dl=='pending' %}active{% endif %}">待克隆<span id="fc-dl-pending"></span></a>
+    <a href="/?q={{ q }}&dl=pending&run={{ run }}"   class="filter-btn {% if dl=='pending' %}active{% endif %}">待下载<span id="fc-dl-pending"></span></a>
   </div>
 </div>
 
@@ -80,7 +80,7 @@
       <th>库名</th>
       <th>GitHub</th>
       <th>子路径</th>
-      <th>克隆状态</th>
+      <th>下载状态</th>
       <th>分析状态</th>
       <th>操作</th>
     </tr>

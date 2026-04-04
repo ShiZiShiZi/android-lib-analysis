@@ -1,8 +1,8 @@
 ---
 name: ecosystem-check
-description: "Identify ecosystem-sensitive capability categories in a React Native library and distinguish single vs aggregated implementations"
+description: "Identify ecosystem-sensitive capability categories in an Android library and distinguish single vs aggregated implementations"
 metadata:
-  category: "rn-analysis"
+  category: "android-analysis"
 ---
 
 ## Goal
@@ -35,7 +35,7 @@ metadata:
 - `taxonomy1.categories` 含 `ads` → 命中
 - 统计 `taxonomy1.tags` 中的广告网络数量：
   `admob` / `pangle` / `unity_ads` / `facebook_ads` / `applovin` / `ironsource` / `mintegral` / `vungle` / `chartboost`
-  - 出现 `topon` / `gromore` → **聚合**（mediation platform，直接判定）
+  - 出现 `topon` / `gromore` → **聚合**
   - 广告网络 tags ≥ 2 → **聚合**
   - 广告网络 tags = 1 → **单一**
 
@@ -62,37 +62,35 @@ metadata:
 ## Step 2 — 补充 grep（仅针对 features 未覆盖的三类）
 
 ```bash
+EXCL="--exclude-dir=build --exclude-dir=.gradle --exclude-dir=test --exclude-dir=example --exclude-dir=sample"
+
 # web 内核（系统 WebView）
-grep -r "react-native-webview" \
-  --include="*.json" --exclude-dir=node_modules --exclude-dir=example -l -i . 2>/dev/null
+grep -r "WebView\|WebSettings\|WebViewClient\|JsBridge" \
+  --include="*.java" --include="*.kt" --include="*.xml" -l -i $EXCL . 2>/dev/null
 
 # web 内核（第三方：腾讯 X5、UC 内核等）
 grep -r "TBSWebView\|X5WebView\|QBSdk\|tbs_sdk\|UCWebView\|crosswalk\|XWalkView" \
-  --include="*.js" --include="*.ts" --include="*.tsx" --include="*.java" --include="*.kt" --include="*.gradle" --include="*.json" \
-  --exclude-dir=node_modules --exclude-dir=example -l -i . 2>/dev/null
+  --include="*.java" --include="*.kt" --include="*.gradle" -l -i $EXCL . 2>/dev/null
 
 # 输入法 SDK
 grep -r "SogouIME\|BaiduIME\|iFlyIME\|sogou.*input\|baidu.*input\|iflytek.*input\|InputMethodService" \
-  --include="*.js" --include="*.ts" --include="*.tsx" --include="*.java" --include="*.kt" --include="*.json" \
-  --exclude-dir=node_modules --exclude-dir=example -l -i . 2>/dev/null
+  --include="*.java" --include="*.kt" --include="*.gradle" -l -i $EXCL . 2>/dev/null
 
 # 收银台（聚合支付 UI 层）
-grep -r "cashier\|收银台\|PaymentSheet\|CheckoutUI\|checkout.*sdk\|payment.*cashier\|CashierActivity" \
-  --include="*.js" --include="*.ts" --include="*.tsx" --include="*.java" --include="*.kt" --include="*.json" \
-  --exclude-dir=node_modules --exclude-dir=example -l -i . 2>/dev/null
+grep -r "cashier\|收银台\|PaymentSheet\|CheckoutUI\|checkout.*sdk\|payment.*cashier\|CashierActivity\|PayUI" \
+  --include="*.java" --include="*.kt" --include="*.gradle" -l -i $EXCL . 2>/dev/null
 
-# CodePush 热更新（React Native 特有）
-grep -r "code-push\|codepush\|CodePush\|react-native-code-push" \
-  --include="*.js" --include="*.ts" --include="*.tsx" --include="*.json" \
-  --exclude-dir=node_modules --exclude-dir=example -l -i . 2>/dev/null
+# Android 热修复框架
+grep -r "Robust\|Tinker\|AndFix\|Nuwa\|Amigo\|Hotfix\|Sophix\|Aceso\|InstantRun\|patch\|hotfix" \
+  --include="*.java" --include="*.kt" --include="*.gradle" -l -i $EXCL . 2>/dev/null
 ```
 
 **grep 结果判定：**
-- react-native-webview 命中（无 X5/UC）→ type=`system`
-- web 内核命中 X5/UC → type=`third_party`；同时命中 react-native-webview → type=`aggregated`
-- 输入法命中 → type=`single`（接入了特定 IME SDK）
+- WebView 命中（无 X5/UC）→ type=`system`
+- web 内核命中 X5/UC → type=`third_party`；同时命中 WebView → type=`aggregated`
+- 输入法命中 → type=`single`
 - 收银台命中 → type=`aggregated`（收银台本身即聚合形态）
-- CodePush 命中 → type=`single`（热更新平台）
+- 热修复框架命中 → type=`single`
 
 ---
 
@@ -101,7 +99,7 @@ grep -r "code-push\|codepush\|CodePush\|react-native-code-push" \
 | 类别 | single（单一接入）| aggregated（聚合接入）|
 |------|----------------|-------------------|
 | 广告 | 仅 1 个广告网络 | ≥2 个广告网络，或含 TopOn / Gromore 等 mediation |
-| 账号登录 | 仅 1 种登录方式 | ≥2 种登录方式（如微信+手机号+Apple） |
+| 账号登录 | 仅 1 种登录方式 | ≥2 种登录方式 |
 | 支付 | 仅 1 个支付渠道 | ≥2 个支付渠道 |
 | 收银台 | — | 收银台本身即聚合，固定为 aggregated |
 | web 内核 | 系统 WebView（system）或单一第三方（third_party） | 系统+第三方共存 |
@@ -135,8 +133,8 @@ grep -r "code-push\|codepush\|CodePush\|react-native-code-push" \
         "category": "hot_update",
         "label": "热更新",
         "type": "single",
-        "sdks": ["CodePush"],
-        "note": "集成 react-native-code-push 热更新能力"
+        "sdks": ["Tinker"],
+        "note": "集成腾讯 Tinker 热修复框架"
       }
     ]
   }

@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}{{ library.name }} — RN Analyzer{% endblock %}
+{% block title %}{{ library.name }} — Android Analyzer{% endblock %}
 {% block body_id %}page-library{% endblock %}
 
 {% block content %}
@@ -20,8 +20,8 @@
       <span>{{ library.name }}</span>
     </div>
     <div>
-      <label>克隆状态</label>
-      {% set dl_labels = {'pending':'待克隆','running':'克隆中','done':'已克隆','failed':'克隆失败','cleaned':'已清理'} %}
+      <label>下载状态</label>
+      {% set dl_labels = {'pending':'待下载','running':'下载中','done':'已下载','failed':'下载失败','cleaned':'已清理'} %}
       <span class="badge badge-{{ library.dl_status }}">{{ dl_labels.get(library.dl_status, library.dl_status) }}</span>
     </div>
     <div class="full-width">
@@ -78,7 +78,7 @@
 
 <div class="tab-bar" style="margin-top:24px; display:flex; gap:4px; border-bottom:2px solid #e0e0e0;">
   <button class="tab-btn active" data-tab="result" onclick="switchTab('result')">📋 分析结果</button>
-  <button class="tab-btn" data-tab="thinking" onclick="switchTab('thinking')">🧠 思考过程</button>
+  <button class="tab-btn" data-tab="live" onclick="switchTab('live')">⚡ 实时状态</button>
 </div>
 
 <style>
@@ -157,19 +157,25 @@
     {% endfor %}
   </div>
   {% endif %}
-
-  {% if latest_run.status in ('running', 'pending') %}
-  <div style="margin-top:16px;">
-    <h3 style="font-size:14px;">📜 实时日志</h3>
-    <pre id="run-log" style="max-height:400px; min-height:200px; padding:12px; background:#263238; color:#aed581; border-radius:4px; font-size:12px; overflow:auto;"></pre>
-  </div>
-  {% endif %}
 </div>
 {% else %}
 <div class="empty-state">
   <p>还未分析，点击「开始分析」按钮。</p>
 </div>
 {% endif %}
+</div>
+
+<div id="tab-live" class="tab-content">
+  <div style="padding:16px; background:#1e1e1e; border-radius:8px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+      <h3 style="margin:0; font-size:14px; color:#e0e0e0;">⚡ 实时执行状态</h3>
+      <button class="btn btn-xs" onclick="refreshLiveStatus(PAGE_DATA.runId)">🔄 刷新</button>
+    </div>
+    <div id="live-log-container" style="max-height:600px; min-height:300px; overflow-y:auto; background:#263238; border-radius:6px;">
+      <div id="live-log-messages" style="color:#b0b0b0; padding:8px;">加载中...</div>
+    </div>
+    <div id="live-status-bar" style="margin-top:8px; padding:8px; background:#2d2d2d; border-radius:4px; color:#80cbc4; font-size:12px;"></div>
+  </div>
 </div>
 
 <div id="tab-thinking" class="tab-content">
@@ -206,6 +212,8 @@
 
 {% block scripts %}
 <script>
+let liveStatusInterval = null;
+
 window.PAGE_DATA = {
   libraryId: {{ library.id }},
   runId: {{ latest_run.id if latest_run else 'null' }},
@@ -213,9 +221,8 @@ window.PAGE_DATA = {
 };
 
 if (window.PAGE_DATA.runStatus === 'running') {
-  startRunLogPoll(PAGE_DATA.runId);
   startRunStatusPoll(PAGE_DATA.runId);
-  startThinkingPoll(PAGE_DATA.runId);
+  startLiveStatusPoll(PAGE_DATA.runId);
 }
 
 function switchTab(tabName) {
@@ -224,35 +231,93 @@ function switchTab(tabName) {
   document.querySelector(`.tab-btn[data-tab="${tabName}"]`).classList.add('active');
   document.getElementById(`tab-${tabName}`).classList.add('active');
   
-  if (tabName === 'thinking' && PAGE_DATA.runId) {
-    loadThinkingLog(PAGE_DATA.runId);
+  if (tabName === 'live' && PAGE_DATA.runId) {
+    refreshLiveStatus(PAGE_DATA.runId);
   }
 }
 
-let thinkingPollInterval = null;
-function startThinkingPoll(runId) {
-  if (thinkingPollInterval) return;
-  thinkingPollInterval = setInterval(() => {
-    loadThinkingLog(runId, true);
-  }, 2000);
+function startLiveStatusPoll(runId) {
+  if (liveStatusInterval) return;
+  refreshLiveStatus(runId);
+  liveStatusInterval = setInterval(() => refreshLiveStatus(runId), 2000);
 }
 
-async function loadThinkingLog(runId, isPolling = false) {
-  const el = document.getElementById('thinking-log');
-  if (!el) return;
-  if (isPolling && el.dataset.complete) return;
+async function refreshLiveStatus(runId) {
+  const container = document.getElementById('live-log-messages');
+  const statusBar = document.getElementById('live-status-bar');
+  if (!container) return;
+  
   try {
-    const r = await apiFetch(`/api/runs/${runId}/thinking`);
-    const content = r.thinking || '';
-    if (content) {
-      el.textContent = content;
-      if (PAGE_DATA.runStatus === 'done') {
-        el.dataset.complete = '1';
-        if (thinkingPollInterval) clearInterval(thinkingPollInterval);
+    const data = await apiFetch(`/api/runs/${runId}/live-status`);
+    
+    if (data.finished) {
+      if (liveStatusInterval) {
+        clearInterval(liveStatusInterval);
+        liveStatusInterval = null;
       }
     }
+    
+    if (!data.messages || data.messages.length === 0) {
+      container.innerHTML = '<div style="color:#757575; padding:8px;">暂无消息</div>';
+      statusBar.textContent = data.finished ? '✓ 分析已完成' : '⏳ 等待消息...';
+      return;
+    }
+    
+    const html = data.messages.map(m => {
+      if (m.type === 'tool') {
+        const statusIcon = m.status === 'completed' ? '✓' : m.status === 'running' ? '⏳' : m.status === 'failed' ? '✗' : '○';
+        const statusColor = m.status === 'completed' ? '#4caf50' : m.status === 'running' ? '#2196f3' : m.status === 'failed' ? '#f44336' : '#757575';
+        const toolIcon = m.tool === 'bash' ? '🔧' : m.tool === 'read' ? '📖' : m.tool === 'write' ? '✏️' : m.tool === 'glob' ? '🔍' : m.tool === 'grep' ? '🔎' : m.tool === 'skill' ? '⚡' : m.tool === 'task' ? '📋' : '⚙️';
+        
+        let detailHtml = '';
+        if (m.command) {
+          detailHtml += `<div style="color:#80cbc4; margin-top:4px; padding-left:20px;">$ ${escHtml(m.command)}</div>`;
+        }
+        if (m.output_preview) {
+          detailHtml += `<div style="color:#a5d6a7; margin-top:2px; padding-left:20px; white-space:pre-wrap;">${escHtml(m.output_preview)}</div>`;
+        }
+        
+        return `
+          <div style="padding:6px 8px; border-bottom:1px solid #333; cursor:pointer;" onclick="this.querySelector('.log-detail').style.display=this.querySelector('.log-detail').style.display==='none'?'block':'none'">
+            <span style="color:#757575;">${m.time}</span>
+            <span>${toolIcon}</span>
+            <span style="color:${statusColor};">${statusIcon}</span>
+            <span style="color:#e0e0e0;">${escHtml(m.title)}</span>
+            <div class="log-detail" style="display:none; margin-top:6px; padding:8px; background:#2d2d2d; border-radius:4px;">
+              ${detailHtml}
+            </div>
+          </div>
+        `;
+      } else if (m.type === 'text' || m.type === 'reasoning') {
+        const icon = m.type === 'reasoning' ? '💭' : '📝';
+        return `
+          <div style="padding:6px 8px; border-bottom:1px solid #333;">
+            <span>${icon}</span>
+            <span style="color:#b0b0b0;">${escHtml(m.text)}</span>
+          </div>
+        `;
+      } else if (m.type === 'info') {
+        return `<div style="padding:6px 8px; border-bottom:1px solid #333; color:#64b5f6;">ℹ️ ${escHtml(m.text)}</div>`;
+      } else if (m.type === 'error') {
+        return `<div style="padding:6px 8px; border-bottom:1px solid #333; color:#ef5350;">❌ ${escHtml(m.text)}</div>`;
+      }
+      return '';
+    }).join('');
+    
+    container.innerHTML = html;
+    
+    if (data.finished) {
+      container.innerHTML += '<div style="padding:8px; color:#4caf50; text-align:center; border-top:2px solid #4caf50; margin-top:8px;">✓ 分析已完成</div>';
+      statusBar.textContent = '✓ 分析已完成';
+    } else {
+      statusBar.textContent = `⏳ 运行中... | 消息数: ${data.messages.length}`;
+    }
+    
+    const parent = document.getElementById('live-log-container');
+    if (parent) parent.scrollTop = parent.scrollHeight;
+    
   } catch(e) {
-    if (!isPolling) el.textContent = '加载失败：' + e.message;
+    container.innerHTML = `<div style="color:#ef5350; padding:8px;">获取状态失败: ${escHtml(e.message)}</div>`;
   }
 }
 

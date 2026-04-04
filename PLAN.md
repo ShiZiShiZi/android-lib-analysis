@@ -1,4 +1,4 @@
-# React Native Library Analyzer - GitHub 源码分析
+# Android Library Analyzer - GitHub 源码分析
 
 ## 系统架构
 
@@ -22,7 +22,7 @@
            │
            ▼
 ┌─────────────────────┐
-│ rn-analyzer Agent   │ → 八维度分析
+│ android-analyzer    │ → 八维度分析
 └─────────────────────┘
 ```
 
@@ -30,7 +30,7 @@
 
 - `https://github.com/owner/repo`
 - `https://github.com/owner/repo/tree/main`
-- `https://github.com/expo/expo/tree/main/packages/expo-camera`
+- `https://github.com/square/okhttp/tree/master/okhttp-bom`
 
 ## 八维度分析
 
@@ -43,12 +43,46 @@
 7. Dependency（依赖结构）
 8. Code Stats（代码统计）
 
+## 分析内容
+
+### 依赖结构分析
+- Gradle Maven 依赖（build.gradle dependencies）
+- 本地 JAR/AAR 文件
+- NDK C/C++ 库
+- 预编译 .so 文件
+- 平台专有 API（OpenGL ES、Camera2、Media NDK 等）
+
+### 代码统计
+- Java 代码规模
+- Kotlin 代码规模
+- C/C++ 代码规模
+- 公开 API 面积（公开类和方法数）
+
+### 厂商平台识别
+- HMS（华为）
+- GMS（Google）
+- XIAOMI_OPEN（小米）
+- OPPO_OPEN（OPPO）
+- VIVO_OPEN（vivo）
+- HONOR_OPEN（荣耀）
+- MEIZU_OPEN（魅族）
+- AGGREGATOR_PLATFORM（聚合平台）
+
 ## 使用方式
 
 ```bash
-# 启动服务
-python3 -m uvicorn web.app:app --host 0.0.0.0 --port 8000
+# 分析单个 Android 库
+python main.py https://github.com/square/okhttp
 
-# 访问
-open http://localhost:8000
+# 分析 monorepo 子路径
+python main.py https://github.com/square/okhttp/tree/master/okhttp-bom
+
+# 指定输出文件
+python main.py https://github.com/square/retrofit --output retrofit.json
+
+# 保留克隆的仓库目录
+python main.py https://github.com/square/okhttp --keep
+
+# 详细日志
+python main.py https://github.com/square/okhttp --verbose
 ```

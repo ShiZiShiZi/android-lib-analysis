@@ -17,10 +17,10 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from email.utils import formatdate
 
-from src.analyzer import LOG_DIR
-from src.proxy import start_proxy, stop_proxy
+from src.opencode_client import LOG_DIR
 from src.github_downloader import REPOS_DIR, clone_repo, get_package_path, get_repo_size_mb, cleanup_repo, get_commit_sha
 from src.github_parser import parse_github_url, GitHubRepoInfo
+from src.server_pool import get_server_pool
 from web import db as database
 from web.queue import CONCURRENCY, analysis_queue, running_runs
 
@@ -47,31 +47,13 @@ async def lifespan(app: FastAPI):
     global _DOWNLOAD_SEMAPHORE
     _DOWNLOAD_SEMAPHORE = asyncio.Semaphore(3)
     
-    # 启动时验证配置文件
-    config_path = Path.home() / ".config/opencode/opencode.json"
-    if not config_path.exists():
-        logger.error(f"启动失败：opencode 配置文件不存在: {config_path}")
-        raise RuntimeError(f"opencode 配置文件不存在: {config_path}")
-
-    try:
-        base_config = json.loads(config_path.read_text())
-    except json.JSONDecodeError as e:
-        logger.error(f"启动失败：opencode 配置文件格式错误: {e}")
-        raise RuntimeError(f"opencode 配置文件格式错误: {e}")
-
     await database.init_db()
     dl_reset, run_reset = await database.reset_stale_states()
     if dl_reset or run_reset:
         logger.warning("重置了 %d 个下载 / %d 个分析任务（服务重启）", dl_reset, run_reset)
 
-    real_url = base_config["provider"]["bailian-coding-plan"]["options"]["baseURL"]
-    proxy = start_proxy(real_url, port=0, verbose=False)
-    if proxy is None:
-        logger.error("启动失败：代理启动失败")
-        raise RuntimeError("Failed to start proxy")
-
-    proxy_port = proxy.server_address[1]
-    logger.info("代理已启动，端口 %d → %s", proxy_port, real_url)
+    pool = await get_server_pool()
+    logger.info("ServerPool 已启动: %d 个实例", len(pool.servers))
 
     worker_tasks = [
         asyncio.create_task(analysis_queue.worker()) for _ in range(CONCURRENCY)
@@ -85,11 +67,12 @@ async def lifespan(app: FastAPI):
             await t
         except asyncio.CancelledError:
             pass
-    stop_proxy(proxy)
+    
+    await pool.stop_all()
     await database.close_db()
 
 
-app = FastAPI(lifespan=lifespan, title="React Native Library Analyzer")
+app = FastAPI(lifespan=lifespan, title="Android Library Analyzer")
 app.mount("/static", StaticFiles(directory=str(_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(_DIR / "templates"))
 
@@ -364,11 +347,11 @@ async def download_template():
     try:
         import pandas as pd
         df = pd.DataFrame({
-            'name': ['expo-camera', '@react-native-firebase/app', 'react-native-maps'],
+            'name': ['okhttp', 'retrofit', 'glide'],
             'git_url': [
-                'https://github.com/expo/expo/tree/main/packages/expo-camera',
-                'https://github.com/invertase/react-native-firebase/tree/main/packages/app',
-                'https://github.com/react-native-maps/react-native-maps',
+                'https://github.com/square/okhttp',
+                'https://github.com/square/retrofit',
+                'https://github.com/bumptech/glide',
             ],
             'sub_path': ['', '', ''],
         })
@@ -555,178 +538,6 @@ async def get_runs(library_id: int):
     return JSONResponse({"runs": runs})
 
 
-@app.get("/api/runs/{run_id}")
-async def get_run(run_id: int):
-    run = await database.get_run(run_id)
-    if not run:
-        raise HTTPException(status_code=404, detail="Run not found")
-    return JSONResponse({"run": run})
-
-
-@app.get("/api/runs/{run_id}/logs")
-async def get_run_logs(run_id: int, since: int = 0):
-    is_running = run_id in running_runs
-    log_file = LOG_DIR / str(run_id) / "analysis.log"
-
-    if not log_file.exists():
-        return JSONResponse({"lines": [], "total": 0, "done": True})
-
-    mtime = log_file.stat().st_mtime
-    last_modified = formatdate(mtime, usegmt=True)
-
-    content = log_file.read_text(encoding="utf-8", errors="replace")
-    lines = content.split("\n")
-    if lines and lines[-1] == "":
-        lines = lines[:-1]
-
-    response = JSONResponse({"lines": lines[since:], "total": len(lines), "done": not is_running})
-    response.headers['Last-Modified'] = last_modified
-    return response
-
-
-@app.get("/api/system/status")
-async def system_status():
-    return JSONResponse({
-        "queue_size": analysis_queue.size,
-        "current_task": analysis_queue.current,
-    })
-
-
-@app.get("/api/tasks")
-async def list_tasks():
-    downloads = []
-    for lib_id, task in list(_download_tasks.items()):
-        if task.done():
-            continue
-        library = await database.get_library(lib_id)
-        downloads.append({
-            "library_id": lib_id,
-            "name": library["name"] if library else f"Library #{lib_id}",
-        })
-    
-    analysis_current = []
-    for item in analysis_queue.current:
-        library = await database.get_library(item["library_id"])
-        run = await database.get_run(item["run_id"])
-        analysis_current.append({
-            "library_id": item["library_id"],
-            "run_id": item["run_id"],
-            "name": library["name"] if library else f"Library #{item['library_id']}",
-            "created_at": run["created_at"] if run else None,
-            "is_current": True,
-        })
-    
-    analysis_pending = []
-    for item in analysis_queue.list_pending():
-        library = await database.get_library(item["library_id"])
-        run = await database.get_run(item["run_id"])
-        analysis_pending.append({
-            "library_id": item["library_id"],
-            "run_id": item["run_id"],
-            "name": library["name"] if library else f"Library #{item['library_id']}",
-            "created_at": run["created_at"] if run else None,
-            "is_current": False,
-        })
-    
-    return JSONResponse({
-        "downloads": downloads,
-        "analysis_current": analysis_current,
-        "analysis_pending": analysis_pending,
-    })
-
-
-@app.delete("/api/tasks/download/{library_id}")
-async def cancel_download_task(library_id: int):
-    task = _download_tasks.pop(library_id, None)
-    if task and not task.done():
-        task.cancel()
-    await database.update_library_dl(library_id, "failed", error="用户已取消")
-    return JSONResponse({"ok": True})
-
-
-@app.delete("/api/tasks/analysis/{run_id}")
-async def cancel_analysis_task(run_id: int):
-    ok = analysis_queue.cancel_pending(run_id)
-    if ok:
-        now = datetime.now(timezone.utc).isoformat()
-        await database.update_run(run_id, "failed", error_msg="用户已取消", finished_at=now, duration_ms=0)
-    return JSONResponse({"ok": ok})
-
-
-@app.get("/api/system/library-counts")
-async def library_counts():
-    return JSONResponse({
-        "dl": await database.get_dl_status_counts(),
-        "run": await database.get_run_status_counts(),
-    })
-
-
-# ── Export ────────────────────────────────────────────────────────────────────
-
-CATEGORY_ZH = {
-    "payment": "支付", "map_location": "地图定位",
-    "push_notification": "推送通知", "im_chat": "即时通讯",
-    "audio_video_call": "音视频通话", "storage": "存储",
-    "file_media": "文件媒体", "networking": "网络",
-    "auth_security": "认证安全", "analytics": "数据分析",
-    "ads": "广告", "social_share": "社交分享",
-    "ui_component": "UI组件", "device_sensor": "设备传感器",
-    "bluetooth_hardware": "蓝牙硬件", "ar_xr": "AR/XR",
-    "ai_ml": "AI/ML", "platform_utility": "平台工具",
-}
-
-
-@app.get("/export")
-async def export_csv():
-    libraries = await database.list_libraries()
-
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    
-    HDR = ["名称", "GitHub URL", "子路径", "Commit", "下载状态", "分析状态",
-           "云拓扑", "涉及付费", "许可证", "移动平台", "功能分类"]
-    w.writerow(HDR)
-
-    DL_ZH  = {"pending": "待下载", "running": "下载中", "done": "已下载", "failed": "下载失败", "cleaned": "已清理"}
-    RUN_ZH = {"pending": "待分析", "running": "分析中", "done": "已完成", "failed": "分析失败"}
-
-    for lib in libraries:
-        if lib.get("run_status") != "done":
-            continue
-        runs = await database.list_runs_for_library(lib["id"])
-        if not runs or not runs[0].get("result"):
-            continue
-        result_json = runs[0]["result"]
-        if isinstance(result_json, str):
-            result_json = json.loads(result_json)
-
-        cs = result_json.get("cloud_services", {})
-        pay = result_json.get("payment", {})
-        lic = result_json.get("license", {})
-        mp = result_json.get("mobile_platform", {})
-        ft = result_json.get("features", {})
-
-        w.writerow([
-            lib["name"],
-            lib.get("git_url", ""),
-            lib.get("sub_path", ""),
-            lib.get("commit_sha", ""),
-            DL_ZH.get(lib.get("dl_status", ""), lib.get("dl_status", "")),
-            RUN_ZH.get(lib.get("run_status", ""), lib.get("run_status", "") or "未分析"),
-            cs.get("topology", ""),
-            "是" if pay.get("involves_payment") else "否",
-            lic.get("declared_license", ""),
-            mp.get("label", ""),
-            " | ".join(ft.get("taxonomy1", {}).get("categories", [])),
-        ])
-
-    return Response(
-        content="\ufeff" + buf.getvalue(),
-        media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="libraries_export.csv"'},
-    )
-
-
 @app.get("/export/json")
 async def export_json():
     libraries = await database.list_libraries()
@@ -756,28 +567,169 @@ async def export_json():
 
 # ── Log APIs ───────────────────────────────────────────────────────────────────
 
-@app.get("/api/runs/{run_id}/thinking")
-async def get_thinking_log(run_id: int):
-    """获取模型思考日志"""
-    log_file = LOG_DIR / str(run_id) / "thinking.log"
-    if not log_file.exists():
-        return JSONResponse({"thinking": "", "exists": False})
-    return JSONResponse({"thinking": log_file.read_text(encoding="utf-8"), "exists": True})
-
-
-@app.get("/api/libraries/{library_id}/result")
-async def get_result_file(library_id: int):
-    """获取结果 JSON 文件"""
-    library = await database.get_library(library_id)
-    if not library:
-        raise HTTPException(status_code=404, detail="Library not found")
+@app.get("/api/runs/{run_id}/live-status")
+async def get_run_live_status(run_id: int):
+    """获取运行中的实时状态（通过 opencode serve session API）"""
+    from web.queue import run_session_map
+    from datetime import datetime
+    import httpx
     
-    safe_name = library["name"].replace("/", "_").replace("@", "")
-    result_file = OUTPUT_DIR / f"{safe_name}.json"
-    if not result_file.exists():
-        raise HTTPException(status_code=404, detail="Result file not found")
+    run = await database.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
     
-    return Response(
-        content=result_file.read_text(encoding="utf-8"),
-        media_type="application/json"
-    )
+    if run["status"] in ("done", "failed"):
+        return JSONResponse({
+            "status": run["status"],
+            "finished": True,
+            "error_msg": run.get("error_msg"),
+            "messages": [],
+        })
+    
+    session_info = run_session_map.get(run_id)
+    if not session_info:
+        return JSONResponse({
+            "status": run["status"],
+            "finished": False,
+            "messages": [{"type": "info", "text": "任务正在初始化，请稍候..."}],
+        })
+    
+    session_id, server_url = session_info
+    
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{server_url}/session/{session_id}/message?limit=100")
+            resp.raise_for_status()
+            try:
+                messages = resp.json()
+            except Exception:
+                return JSONResponse({
+                    "status": run["status"],
+                    "finished": False,
+                    "messages": [{"type": "error", "text": "opencode 返回无效响应"}],
+                })
+    except Exception as e:
+        return JSONResponse({
+            "status": run["status"],
+            "finished": False,
+            "messages": [{"type": "error", "text": f"无法连接 opencode: {str(e)[:80]}"}],
+        })
+    
+    if not messages:
+        return JSONResponse({
+            "status": run["status"],
+            "finished": False,
+            "messages": [{"type": "info", "text": "暂无消息"}],
+        })
+    
+    formatted_messages = []
+    finished = False
+    
+    for msg in messages:
+        info = msg.get("info", {})
+        parts = msg.get("parts", [])
+        
+        if info.get("finish") == "stop":
+            finished = True
+        
+        for p in parts:
+            p_type = p.get("type")
+            
+            if p_type == "step-start":
+                continue
+            elif p_type == "step-finish":
+                continue
+            elif p_type == "tool":
+                state = p.get("state", {})
+                tool_name = p.get("tool", "unknown")
+                tool_status = state.get("status", "unknown")
+                
+                time_info = state.get("time", {})
+                start_time = time_info.get("start", 0)
+                time_str = datetime.fromtimestamp(start_time / 1000).strftime("%H:%M:%S") if start_time else ""
+                
+                title = state.get("title", "")
+                command = ""
+                output_preview = ""
+                
+                if tool_name == "bash":
+                    inp = state.get("input", {})
+                    command = inp.get("command", "")[:200]
+                    desc = inp.get("description", "")
+                    if not title and desc:
+                        title = desc
+                    out = state.get("output", "") or state.get("metadata", {}).get("output", "")
+                    if out:
+                        lines = out.strip().split("\n")[:3]
+                        output_preview = "\n".join(lines)[:300]
+                elif tool_name == "read":
+                    inp = state.get("input", {})
+                    file_path = inp.get("file_path", "")
+                    if not title and file_path:
+                        title = f"读取 {file_path.split('/')[-1]}"
+                elif tool_name == "glob":
+                    inp = state.get("input", {})
+                    pattern = inp.get("pattern", "")
+                    if not title and pattern:
+                        title = f"搜索 {pattern}"
+                elif tool_name == "grep":
+                    inp = state.get("input", {})
+                    pattern = inp.get("pattern", "")
+                    if not title and pattern:
+                        title = f"查找 {pattern[:50]}"
+                elif tool_name == "write":
+                    inp = state.get("input", {})
+                    file_path = inp.get("file_path", "")
+                    if not title and file_path:
+                        title = f"写入 {file_path.split('/')[-1]}"
+                elif tool_name == "skill":
+                    inp = state.get("input", {})
+                    skill_name = inp.get("name", "")
+                    if not title and skill_name:
+                        title = f"执行 skill: {skill_name}"
+                elif tool_name == "task":
+                    inp = state.get("input", {})
+                    subagent = inp.get("subagent_type", "")
+                    if not title and subagent:
+                        title = f"启动子任务: {subagent}"
+                
+                if not title:
+                    title = tool_name
+                
+                formatted_messages.append({
+                    "id": p.get("id", ""),
+                    "type": "tool",
+                    "tool": tool_name,
+                    "status": tool_status,
+                    "time": time_str,
+                    "title": title[:100],
+                    "command": command,
+                    "output_preview": output_preview,
+                })
+            
+            elif p_type == "text":
+                text = p.get("text", "")
+                if text and len(text.strip()) > 0:
+                    formatted_messages.append({
+                        "id": p.get("id", ""),
+                        "type": "text",
+                        "time": "",
+                        "text": text[:200],
+                    })
+            
+            elif p_type == "reasoning":
+                text = p.get("text", "")
+                if text and len(text.strip()) > 0:
+                    formatted_messages.append({
+                        "id": p.get("id", ""),
+                        "type": "reasoning",
+                        "time": "",
+                        "text": text[:200],
+                    })
+    
+    return JSONResponse({
+        "status": run["status"],
+        "finished": finished,
+        "messages": formatted_messages[-50:],
+        "session_id": session_id,
+    })

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-React Native Library Analyzer
-用法：python main.py <package_name> [--output <file>] [--keep] [--verbose]
+Android Library Analyzer
+用法：python main.py <github_url> [--output <file>] [--keep] [--verbose]
 """
 import argparse
 import json
@@ -14,7 +14,7 @@ import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.npm_downloader import cleanup_package, download_and_extract
+from src.github_downloader import cleanup_repo, clone_from_url, get_package_path
 from src.proxy import start_proxy, stop_proxy
 
 PROJECT_DIR = Path(__file__).parent
@@ -23,14 +23,14 @@ OUTPUT_DIR = PROJECT_DIR / "output"
 
 def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict) -> str:
     prompt = (
-        f"分析路径 {repo_path} 下的 React Native 库，该目录已存在，直接读取即可，禁止执行 git clone 或任何下载操作。"
+        f"分析路径 {repo_path} 下的 Android 三方库，该目录已存在，直接读取即可，禁止执行 git clone 或任何下载操作。"
         f"请依次使用 license-check、mobile-platform-check、cloud-service-check、payment-check、features-check、ecosystem-check、dependency-analysis、code-stats-check 八个 skill 完成分析，"
         f"最终只输出一个 JSON 对象，字段包含 repo_url、analyzed_at、cloud_services、payment、license、mobile_platform、features、ecosystem、dependency_analysis、code_stats。"
         f"输出 JSON 中的 repo_url 字段填写：{repo_url}。"
     )
     cmd = [
         "opencode", "run",
-        "--agent", "rn-analyzer",
+        "--agent", "android-analyzer",
         prompt,
     ]
     env = {**os.environ, **extra_env}
@@ -38,7 +38,6 @@ def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict)
         print(f"[opencode] 执行命令: {' '.join(cmd)}", file=sys.stderr)
 
     if verbose:
-        # 实时流式打印输出，方便观察进度
         proc = subprocess.Popen(
             cmd,
             cwd=str(PROJECT_DIR),
@@ -53,13 +52,12 @@ def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict)
                 print(line, end="", file=sys.stderr)
                 stdout_lines.append(line)
         except BrokenPipeError:
-            logger.warning("stdout 管道断裂")
+            pass
         finally:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
-                logger.warning("进程无法正常终止，强制杀掉")
                 proc.kill()
                 proc.wait()
 
@@ -84,7 +82,6 @@ def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict)
     if verbose:
         print(f"[opencode] 返回码: {returncode}", file=sys.stderr)
 
-    # 允许返回码 0, -9 (SIGKILL), -15 (SIGTERM)
     if returncode not in (0, -9, -15):
         print(f"[opencode] 警告：非零返回码 {returncode}，可能分析失败或被中断", file=sys.stderr)
 
@@ -95,8 +92,6 @@ _REQUIRED_KEYS = {"repo_url", "cloud_services", "payment", "license", "mobile_pl
 
 
 def extract_json(text: str) -> dict:
-    """从 opencode 输出中提取包含分析结果的 JSON 对象（必须含全部顶层字段）"""
-    # 去掉可能的 markdown 代码块
     text = re.sub(r"```(?:json)?\s*", "", text)
     decoder = json.JSONDecoder()
     for m in re.finditer(r"\{", text):
@@ -110,9 +105,7 @@ def extract_json(text: str) -> dict:
 
 
 def _serialize_report(report: dict) -> str:
-    """序列化报告，处理不可序列化的对象（如 datetime）"""
     def json_serializer(obj):
-        """处理无法序列化的对象"""
         if hasattr(obj, 'isoformat'):
             return obj.isoformat()
         elif isinstance(obj, (set, frozenset)):
@@ -125,25 +118,29 @@ def _serialize_report(report: dict) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="分析 React Native 库")
-    parser.add_argument("url", help="npm package 名称（如 react-native-alipay 或 @react-native-firebase/app）")
-    parser.add_argument("--output", "-o", help="JSON 输出路径（默认 output/<package_name>.json）")
-    parser.add_argument("--keep", action="store_true", help="分析完成后保留下载的临时目录")
+    parser = argparse.ArgumentParser(description="分析 Android 三方库")
+    parser.add_argument("url", help="GitHub URL（如 https://github.com/square/okhttp 或 https://github.com/square/okhttp/tree/master/okhttp-bom）")
+    parser.add_argument("--output", "-o", help="JSON 输出路径（默认 output/<repo_name>.json）")
+    parser.add_argument("--keep", action="store_true", help="分析完成后保留克隆的临时目录")
     parser.add_argument("--verbose", "-v", action="store_true", help="打印调试信息")
     args = parser.parse_args()
 
-    # 1. Download from npm registry
-    package_name = args.url  # treat positional arg as package name
-    print(f"正在从 npm registry 下载 {package_name} ...")
+    github_url = args.url
+    print(f"正在从 GitHub 克隆 {github_url} ...")
     try:
-        repo_path = download_and_extract(package_name)
-    except RuntimeError as e:
-        print(f"下载失败: {e}", file=sys.stderr)
+        repo_path, repo_info = clone_from_url(github_url, use_ssh=False)
+    except (ValueError, RuntimeError) as e:
+        print(f"克隆失败: {e}", file=sys.stderr)
         sys.exit(1)
-    print(f"下载完成: {repo_path}")
+
+    if repo_info.sub_path:
+        package_path = get_package_path(repo_path, repo_info.sub_path)
+        print(f"克隆完成: {repo_path}，分析子路径: {package_path}")
+    else:
+        package_path = repo_path
+        print(f"克隆完成: {repo_path}")
 
     try:
-        # 2. 启动透明代理（修复 Bailian API message_start 缺 usage 字段的问题）
         config_path = Path.home() / ".config/opencode/opencode.json"
         if not config_path.exists():
             print(f"错误：opencode 配置文件不存在: {config_path}", file=sys.stderr)
@@ -166,7 +163,6 @@ def main():
 
             actual_port = proxy.server_address[1]
 
-            # 独立临时 HOME，写入代理地址，不修改全局配置
             tmp_home = Path(tempfile.mkdtemp(prefix="opencode_run_"))
             tmp_cfg_dir = tmp_home / ".config" / "opencode"
             tmp_cfg_dir.mkdir(parents=True)
@@ -176,7 +172,6 @@ def main():
             )
             (tmp_cfg_dir / "opencode.json").write_text(json.dumps(run_config, indent=4))
 
-            # 共享全局 bin/（888MB language servers），避免 CLI 单次运行也触发重复下载
             tmp_opencode_data = tmp_home / ".local" / "share" / "opencode"
             tmp_opencode_data.mkdir(parents=True)
             global_bin = Path.home() / ".local" / "share" / "opencode" / "bin"
@@ -186,10 +181,9 @@ def main():
                 except (FileExistsError, OSError) as e:
                     print(f"警告：创建 bin 符号链接失败（非致命）: {e}", file=sys.stderr)
 
-            # 3. 调用 opencode 分析
             print("正在分析（可能需要数分钟）...")
             raw_output = run_opencode(
-                repo_path, package_name, args.verbose, {
+                package_path, github_url, args.verbose, {
                     "HOME": str(tmp_home),
                     "XDG_CONFIG_HOME": str(tmp_home / ".config"),
                     "XDG_DATA_HOME":   str(tmp_home / ".local" / "share"),
@@ -212,7 +206,6 @@ def main():
         if args.verbose:
             print(f"[raw output]\n{raw_output}", file=sys.stderr)
 
-        # 3. 提取 JSON
         try:
             report = extract_json(raw_output)
         except (ValueError, json.JSONDecodeError) as e:
@@ -222,15 +215,13 @@ def main():
             (OUTPUT_DIR / "raw_output.txt").write_text(raw_output, encoding="utf-8")
             sys.exit(1)
 
-        # 补充 analyzed_at（如果 agent 没输出）
         report.setdefault("analyzed_at", datetime.now(timezone.utc).isoformat())
 
-        # 4. 写出报告（处理序列化异常）
         OUTPUT_DIR.mkdir(exist_ok=True)
         if args.output:
             out_path = Path(args.output)
         else:
-            safe_name = package_name.replace("/", "-").replace("@", "")
+            safe_name = repo_info.repo_dir_name.replace("/", "-").replace("@", "")
             out_path = OUTPUT_DIR / f"{safe_name}.json"
 
         try:
@@ -244,7 +235,7 @@ def main():
     finally:
         if not args.keep:
             try:
-                cleanup_package(package_name)
+                cleanup_repo(repo_info.repo_dir_name)
                 if args.verbose:
                     print(f"[cleanup] 已删除临时目录 {repo_path}", file=sys.stderr)
             except Exception as e:
