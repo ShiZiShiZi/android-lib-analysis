@@ -113,10 +113,10 @@ async def run_full_analysis(
     on_log: Optional[Callable[[str], Awaitable[None]]] = None,
     on_session_created: Optional[Callable[[str], Awaitable[None]]] = None,
     server_url: Optional[str] = None,
-) -> tuple[dict, Optional[str]]:
+) -> tuple[dict, Optional[str], Path]:
     """全量分析：调用 opencode serve API，结果写入临时文件。
     
-    返回: (report_dict, session_id)
+    返回: (report_dict, session_id, result_file_path)
     """
     result_file = Path(tempfile.gettempdir()) / f"android_full_{uuid.uuid4().hex}.json"
     
@@ -162,7 +162,7 @@ async def run_full_analysis(
         if not isinstance(report, dict):
             raise ValueError("结果文件不是 JSON 对象")
         report.setdefault("analyzed_at", datetime.now(timezone.utc).isoformat())
-        return report, session_id
+        return report, session_id, result_file
     except json.JSONDecodeError as e:
         result_file.unlink(missing_ok=True)
         raise ValueError(f"结果文件 JSON 解析失败: {e}")

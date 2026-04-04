@@ -145,6 +145,7 @@ class AnalysisQueue:
         running_runs.add(run_id)
         report = None
         session_id = None
+        result_file = None
         run_error = None
         server = None
 
@@ -153,7 +154,7 @@ class AnalysisQueue:
             server = await pool.get_server()
             logger.info("[run:%d] 使用 server:%d (端口 %d)", run_id, server.db_index, server.port)
 
-            report, session_id = await asyncio.wait_for(
+            report, session_id, result_file = await asyncio.wait_for(
                 run_full_analysis(
                     repo_path=str(repo_dir),
                     git_url=library_name,
@@ -165,7 +166,40 @@ class AnalysisQueue:
                 timeout=TASK_TIMEOUT
             )
         except asyncio.TimeoutError:
-            run_error = f"任务超时（{TASK_TIMEOUT//60}分钟）"
+            logger.warning(f"[run:{run_id}] 任务超时，检查结果文件是否存在")
+            
+            # 超时时检查结果文件是否已生成
+            if result_file and result_file.exists():
+                logger.info(f"[run:{run_id}] 发现结果文件 {result_file}，尝试读取")
+                try:
+                    raw = result_file.read_text(encoding="utf-8")
+                    report = json.loads(raw)
+                    
+                    # 验证JSON完整性
+                    required_keys = {
+                        'repo_url', 'cloud_services', 'payment', 'license',
+                        'mobile_platform', 'features', 'ecosystem',
+                        'dependency_analysis', 'code_stats'
+                    }
+                    
+                    if required_keys.issubset(report):
+                        logger.info(f"[run:{run_id}] 结果文件完整，标记任务成功")
+                        result_file.unlink(missing_ok=True)
+                        # 不设置 run_error，让后续逻辑标记为成功
+                    else:
+                        missing = required_keys - set(report.keys())
+                        logger.warning(f"[run:{run_id}] 结果文件不完整，缺少字段: {missing}")
+                        run_error = f"任务超时，结果文件不完整（缺少 {len(missing)} 个字段）"
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"[run:{run_id}] 结果文件JSON解析失败: {e}")
+                    run_error = f"任务超时（{TASK_TIMEOUT//60}分钟），结果文件损坏"
+                except Exception as e:
+                    logger.error(f"[run:{run_id}] 读取结果文件失败: {e}")
+                    run_error = f"任务超时（{TASK_TIMEOUT//60}分钟）"
+            else:
+                logger.warning(f"[run:{run_id}] 未找到结果文件")
+                run_error = f"任务超时（{TASK_TIMEOUT//60}分钟）"
         except Exception as exc:
             run_error = str(exc)[:500]
         finally:
