@@ -551,13 +551,16 @@ async def export_json():
         result_json = runs[0]["result"]
         if isinstance(result_json, str):
             result_json = json.loads(result_json)
-        result.append({
+        
+        export_item = {
             "name": lib["name"],
             "git_url": lib.get("git_url"),
             "sub_path": lib.get("sub_path"),
             "commit_sha": lib.get("commit_sha"),
             **result_json,
-        })
+        }
+        
+        result.append(export_item)
     return Response(
         content=json.dumps(result, ensure_ascii=False, indent=2),
         media_type="application/json; charset=utf-8",
@@ -733,3 +736,90 @@ async def get_run_live_status(run_id: int):
         "messages": formatted_messages[-50:],
         "session_id": session_id,
     })
+
+
+# ── System APIs ───────────────────────────────────────────────────────────────
+
+@app.get("/api/system/library-counts")
+async def library_counts():
+    run_counts = await database.get_run_status_counts()
+    dl_counts = await database.get_dl_status_counts()
+    return JSONResponse({"run": run_counts, "dl": dl_counts})
+
+
+# ── Task Management APIs ───────────────────────────────────────────────────────
+
+@app.get("/api/tasks")
+async def get_tasks():
+    downloads = await database.list_downloads_running()
+    analysis_current = analysis_queue.current
+    analysis_pending = analysis_queue.list_pending()
+    
+    enriched_current = []
+    for item in analysis_current:
+        lib = await database.get_library(item["library_id"])
+        run = await database.get_run(item["run_id"])
+        enriched_current.append({
+            "library_id": item["library_id"],
+            "run_id": item["run_id"],
+            "name": lib.get("name", "") if lib else "",
+            "created_at": run.get("created_at", "") if run else "",
+        })
+    
+    enriched_pending = []
+    for item in analysis_pending:
+        lib = await database.get_library(item["library_id"])
+        run = await database.get_run(item["run_id"])
+        enriched_pending.append({
+            "library_id": item["library_id"],
+            "run_id": item["run_id"],
+            "name": lib.get("name", "") if lib else "",
+            "created_at": run.get("created_at", "") if run else "",
+        })
+    
+    return JSONResponse({
+        "downloads": downloads,
+        "analysis_current": enriched_current,
+        "analysis_pending": enriched_pending,
+    })
+
+
+@app.delete("/api/tasks/download/{library_id}")
+async def cancel_download_task(library_id: int):
+    library = await database.get_library(library_id)
+    if not library:
+        raise HTTPException(status_code=404, detail="Library not found")
+    
+    task = _download_tasks.get(library_id)
+    if task and not task.done():
+        task.cancel()
+        _download_tasks.pop(library_id, None)
+        logger.info(f"Cancelled download for library {library_id}")
+        return JSONResponse({"ok": True, "cancelled": True})
+    
+    if library.get("dl_status") == "running":
+        await database.update_library_dl(library_id, "failed", error="用户已取消")
+        return JSONResponse({"ok": True, "cancelled": True, "status_reset": True})
+    
+    return JSONResponse({"ok": False, "error": "no_running_download"}, status_code=400)
+
+
+@app.delete("/api/tasks/analysis/{run_id}")
+async def cancel_analysis_task(run_id: int):
+    run = await database.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    
+    if run["status"] == "done" or run["status"] == "failed":
+        return JSONResponse({"ok": False, "error": "already_finished"}, status_code=400)
+    
+    if run["status"] == "running":
+        return JSONResponse({"ok": False, "error": "currently_running"}, status_code=400)
+    
+    cancelled = analysis_queue.cancel_pending(run_id)
+    if cancelled:
+        await database.update_run(run_id, "failed", error_msg="用户已取消")
+        logger.info(f"Cancelled pending analysis run {run_id}")
+        return JSONResponse({"ok": True, "cancelled": True})
+    
+    return JSONResponse({"ok": False, "error": "not_in_queue"}, status_code=400)

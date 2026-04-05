@@ -7,13 +7,14 @@ metadata:
 
 ## Goal
 
-基于前序 **features-check 的分析结论**，识别库是否涉及以下生态敏感型能力，并区分**单一接入**还是**聚合接入**。
+基于前序 **mobile-platform-check** 和 **features-check** 的分析结论，识别库是否涉及以下生态敏感型能力，并区分**单一接入**还是**聚合接入**。
 
 | category | label | 说明 |
 |----------|-------|------|
 | `ads` | 广告 | 广告变现 SDK |
 | `account_login` | 账号登录 | 第三方登录 / 一键登录 |
 | `payment` | 支付 | 支付渠道 SDK |
+| `map` | 地图 | 地图服务 SDK |
 | `cashier` | 收银台 | 聚合支付 UI 层 |
 | `web_engine` | Web 内核 | 系统 WebView 或第三方内核 |
 | `hot_update` | 热更新 | 动态字节码加载 / 热修复 |
@@ -23,13 +24,48 @@ metadata:
 
 ## 检测策略
 
-大部分信号直接从 features-check 结论推导，**无需重复 grep**。仅对 features 未覆盖的三类（web 内核、输入法、收银台）执行补充扫描。
+**优先读取 mobile-platform-check 的 detected_services**（避免重复检测）：
+- 支付、广告、登录、地图等服务类型已在 mobile-platform-check 中检测
+
+**仅对以下四类执行补充 grep**（detected_services 未覆盖）：
+- Web 内核
+- 输入法
+- 收银台
+- 热更新
 
 ---
 
-## Step 1 — 从 features 结论直接推导
+## Step 1 — 优先读取 detected_services
 
-读取上一步 features-check 输出的 `taxonomy1`、`android_permissions` 字段，**不执行任何 bash 命令**：
+**若前序 mobile-platform-check 已输出 `detected_services`，则直接使用**：
+
+**支付（payment）**
+- 读取 `detected_services.payment`
+- `count ≥ 2` → **聚合**
+- `count = 1` → **单一**
+- `count = 0` → 未命中
+
+**广告（ads）**
+- 读取 `detected_services.ads`
+- `count ≥ 2` → **聚合**
+- `count = 1` → **单一**
+- `count = 0` → 未命中
+
+**账号登录（account_login）**
+- 读取 `detected_services.account_login`
+- `count ≥ 2` → **聚合**
+- `count = 1` → **单一**
+- `count = 0` → 未命中
+
+**地图（map）**
+- 读取 `detected_services.map`
+- `count ≥ 2` → **聚合**
+- `count = 1` → **单一**
+- `count = 0` → 未命中
+
+---
+
+**若 detected_services 不存在**，则从 features-check 结论推导：
 
 **广告（ads）**
 - `taxonomy1.categories` 含 `ads` → 命中
@@ -53,13 +89,20 @@ metadata:
   - 支付渠道 tags ≥ 2 → **聚合支付**
   - 支付渠道 tags = 1 → **单一支付**
 
+**地图（map）**
+- `taxonomy1.categories` 含 `map_location` → 命中
+- 统计 `taxonomy1.tags` 中的地图平台数量：
+  `google_maps` / `amap` / `baidu_maps` / `tencent_maps`
+  - 地图平台 tags ≥ 2 → **聚合**
+  - 地图平台 tags = 1 → **单一**
+
 **热更新（hot_update）**
 - `android_permissions.PROHIBITED` 含 `DexClassLoader` / `PathClassLoader` / `BaseDexClassLoader` → 命中
 - 热更新无单一/聚合之分，type 固定填 `single`
 
 ---
 
-## Step 2 — 补充 grep（仅针对 features 未覆盖的三类）
+## Step 2 — 补充 grep（仅针对 detected_services 未覆盖的四类）
 
 ```bash
 EXCL="--exclude-dir=build --exclude-dir=.gradle --exclude-dir=test --exclude-dir=example --exclude-dir=sample"
@@ -101,6 +144,7 @@ grep -r "Robust\|Tinker\|AndFix\|Nuwa\|Amigo\|Hotfix\|Sophix\|Aceso\|InstantRun\
 | 广告 | 仅 1 个广告网络 | ≥2 个广告网络，或含 TopOn / Gromore 等 mediation |
 | 账号登录 | 仅 1 种登录方式 | ≥2 种登录方式 |
 | 支付 | 仅 1 个支付渠道 | ≥2 个支付渠道 |
+| 地图 | 仅 1 种地图平台 | ≥2 种地图平台 |
 | 收银台 | — | 收银台本身即聚合，固定为 aggregated |
 | web 内核 | 系统 WebView（system）或单一第三方（third_party） | 系统+第三方共存 |
 | 热更新 | 固定为 single | — |
@@ -125,9 +169,16 @@ grep -r "Robust\|Tinker\|AndFix\|Nuwa\|Amigo\|Hotfix\|Sophix\|Aceso\|InstantRun\
       {
         "category": "payment",
         "label": "支付",
+        "type": "aggregated",
+        "sdks": ["Google Pay", "支付宝"],
+        "note": "含 Google Pay+支付宝，属聚合支付"
+      },
+      {
+        "category": "map",
+        "label": "地图",
         "type": "single",
-        "sdks": ["alipay"],
-        "note": "仅接入支付宝单一渠道"
+        "sdks": ["高德地图"],
+        "note": "仅接入高德地图单一平台"
       },
       {
         "category": "hot_update",
@@ -143,7 +194,7 @@ grep -r "Robust\|Tinker\|AndFix\|Nuwa\|Amigo\|Hotfix\|Sophix\|Aceso\|InstantRun\
 
 字段说明：
 - `has_sensitive`：items 非空时为 true，否则为 false
-- `category`：`ads` | `account_login` | `payment` | `cashier` | `web_engine` | `hot_update` | `ime`
+- `category`：`ads` | `account_login` | `payment` | `map` | `cashier` | `web_engine` | `hot_update` | `ime`
 - `label`：对应中文名
 - `type`：`single` | `aggregated` | `system` | `third_party`（web_engine 专用）
 - `sdks`：具体识别到的 SDK / 平台名列表

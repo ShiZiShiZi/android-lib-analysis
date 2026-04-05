@@ -59,21 +59,6 @@ async function loadPluginCounts() {
   } catch (_) {}
 }
 
-async function loadPluginCounts() {
-  try {
-    const data = await apiFetch('/api/system/library-counts');
-    const run = data.run || {};
-    const dl = data.dl || {};
-    const runTotal = Object.values(run).reduce((a, b) => a + b, 0);
-    const dlTotal = Object.values(dl).reduce((a, b) => a + b, 0);
-    const set = (id, val) => { const e = document.getElementById(id); if (e) e.textContent = val > 0 ? ` (${val})` : ''; };
-    set('fc-run-all', runTotal);
-    ['done', 'running', 'pending', 'failed', 'none'].forEach(s => set(`fc-run-${s}`, run[s] || 0));
-    set('fc-dl-all', dlTotal);
-    ['done', 'running', 'pending', 'failed', 'cleaned'].forEach(s => set(`fc-dl-${s}`, dl[s] || 0));
-  } catch (_) {}
-}
-
 function escHtml(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
@@ -385,7 +370,6 @@ function selectFirstN() {
 // ── Run log polling ─────────────────────────────────────────────────────────
 
 let _runLogPoller = null;
-let _runStatusPoller = null;
 
 function startRunLogPoll(runId) {
   if (_runLogPoller) clearInterval(_runLogPoller);
@@ -418,88 +402,6 @@ function stopRunLogPoll() {
   _runLogPoller = null;
 }
 
-function startRunStatusPoll(runId) {
-  if (_runStatusPoller) clearInterval(_runStatusPoller);
-  _runStatusPoller = setInterval(async () => {
-    try {
-      const data = await apiFetch(`/api/runs/${runId}`);
-      if (data.stage_results) updateStageTable(runId, data.stage_results);
-      const anyRunning = (data.stage_results || []).some(s => s.status === 'running');
-      const allTerminal = (data.stage_results || []).length > 0 &&
-        (data.stage_results || []).every(s => s.status === 'done' || s.status === 'failed');
-      if (!anyRunning && allTerminal) {
-        stopRunStatusPoll();
-        stopRunLogPoll();
-        const toast = document.getElementById('analysis-complete-toast');
-        if (toast) toast.style.display = 'block';
-        // Update page status badges
-        const headerBadge = document.querySelector('.run-header .badge');
-        if (headerBadge && data.run) {
-          const labels = {'pending':'队列中','running':'分析中','done':'已完成','failed':'失败'};
-          headerBadge.className = `badge badge-${data.run.status}`;
-          headerBadge.textContent = labels[data.run.status] || data.run.status;
-        }
-      }
-    } catch (_) {}
-  }, 3000);
-}
-
-function stopRunStatusPoll() {
-  clearInterval(_runStatusPoller);
-  _runStatusPoller = null;
-}
-
-function updateStageTable(runId, stageResults) {
-  stageResults.forEach(sr => {
-    const row = document.getElementById(`stage-row-${sr.stage}`);
-    if (!row) return;
-
-    const statusCell = row.children[1];
-    const durCell = row.children[2];
-    const summaryCell = row.children[3];
-    const actionCell = row.children[4];
-
-    let statusHtml = '';
-    if (sr.status === 'done') {
-      statusHtml = '<span class="badge badge-done" style="background:#e8f5e9; color:#2e7d32;">✓ 已完成</span>';
-    } else if (sr.status === 'running') {
-      statusHtml = '<span class="badge badge-running" style="background:#e3f2fd; color:#1976d2;">⟳ 分析中</span>';
-    } else if (sr.status === 'failed') {
-      statusHtml = '<span class="badge badge-failed" style="background:#ffebee; color:#c62828;">✗ 失败</span>';
-    } else {
-      statusHtml = '<span class="badge badge-pending" style="background:#f5f5f5; color:#757575;">待执行</span>';
-    }
-    if (statusCell) statusCell.innerHTML = statusHtml;
-
-    if (durCell && sr.duration_ms) {
-      durCell.textContent = `${Math.floor(sr.duration_ms / 1000)}s`;
-    }
-
-    if (summaryCell && sr.result) {
-      const stage = sr.stage;
-      let summary = '—';
-      if (sr.status === 'done') {
-        if (stage === 'cloud_services') {
-          const topo = sr.result.topology;
-          summary = topo === 'pure_edge' ? '边缘计算' : topo === 'centralized' ? '集中式' : topo === 'decentralized' ? '混合式' : topo || '未知';
-        } else if (stage === 'payment') {
-          summary = (sr.result.payment_required || sr.result.paid || sr.result.has_payment) ? '付费' : '免费';
-        } else if (stage === 'license') {
-          summary = sr.result.type || sr.result.spdx_id || sr.result.declared_license || '未知';
-        } else if (stage === 'mobile_platform') {
-          summary = sr.result.label || '未知';
-        } else if (stage === 'features') {
-          summary = `${(sr.result.feature_list || []).length} 个功能`;
-        }
-      } else if (sr.status === 'failed') {
-        summary = `<span style="color:#c62828; font-size:12px;">${sr.error_msg ? sr.error_msg.slice(0, 20) : '错误'}…</span>`;
-      }
-      summaryCell.innerHTML = summary;
-    }
-  });
-}
-
 window.addEventListener('beforeunload', () => {
   if (_runLogPoller) clearInterval(_runLogPoller);
-  if (_runStatusPoller) clearInterval(_runStatusPoller);
 });

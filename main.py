@@ -23,10 +23,22 @@ OUTPUT_DIR = PROJECT_DIR / "output"
 
 def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict) -> str:
     prompt = (
-        f"分析路径 {repo_path} 下的 Android 三方库，该目录已存在，直接读取即可，禁止执行 git clone 或任何下载操作。"
-        f"请依次使用 license-check、mobile-platform-check、cloud-service-check、payment-check、features-check、ecosystem-check、dependency-analysis、code-stats-check 八个 skill 完成分析，"
-        f"最终只输出一个 JSON 对象，字段包含 repo_url、analyzed_at、cloud_services、payment、license、mobile_platform、features、ecosystem、dependency_analysis、code_stats。"
-        f"输出 JSON 中的 repo_url 字段填写：{repo_url}。"
+        f"分析路径 {repo_path} 下的 Android 三方库，该目录已存在，直接读取即可，禁止执行 git clone 或任何下载操作。\n\n"
+        f"输入参数：\n"
+        f"- repo_path: {repo_path}\n"
+        f"- repo_url: {repo_url}\n\n"
+        f"执行流程：\n"
+        f"1. 首先使用 monorepo-detection skill 检测是否为 monorepo\n"
+        f"2. 执行八步分析（整体分析，单库和 monorepo 统一处理）\n"
+        f"   - license-check、mobile-platform-check、cloud-service-check、payment-check\n"
+        f"   - features-check、ecosystem-check、dependency-analysis、code-stats-check\n"
+        f"3. 若为 monorepo，依赖分析时遍历所有子模块 build.gradle，标记内部依赖\n\n"
+        f"最终输出一个 JSON 对象，必须包含以下字段：\n"
+        f"- repo_url（填写：{repo_url}）\n"
+        f"- analyzed_at\n"
+        f"- is_monorepo（true/false）\n"
+        f"- monorepo_metadata（单库时为空数组）\n"
+        f"- license、mobile_platform、cloud_services、payment、features、ecosystem、dependency_analysis、code_stats\n"
     )
     cmd = [
         "opencode", "run",
@@ -48,9 +60,10 @@ def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict)
         )
         stdout_lines = []
         try:
-            for line in proc.stdout:
-                print(line, end="", file=sys.stderr)
-                stdout_lines.append(line)
+            if proc.stdout is not None:
+                for line in proc.stdout:
+                    print(line, end="", file=sys.stderr)
+                    stdout_lines.append(line)
         except BrokenPipeError:
             pass
         finally:
@@ -88,7 +101,7 @@ def run_opencode(repo_path: Path, repo_url: str, verbose: bool, extra_env: dict)
     return stdout
 
 
-_REQUIRED_KEYS = {"repo_url", "cloud_services", "payment", "license", "mobile_platform", "features", "ecosystem", "dependency_analysis", "code_stats"}
+_REQUIRED_KEYS = {"repo_url", "is_monorepo", "license", "mobile_platform", "cloud_services", "payment", "features", "ecosystem", "dependency_analysis", "code_stats"}
 
 
 def extract_json(text: str) -> dict:

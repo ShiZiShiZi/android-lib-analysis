@@ -315,6 +315,14 @@ async def count_downloads_running() -> int:
         return row[0] if row else 0
 
 
+async def list_downloads_running() -> list[dict]:
+    """返回当前 dl_status='running' 的库列表。"""
+    async with _db.execute(
+        "SELECT id, name, dl_started_at FROM libraries WHERE dl_status='running'"
+    ) as cur:
+        return [_row(r) for r in await cur.fetchall()]
+
+
 async def get_dl_status_counts() -> dict[str, int]:
     async with _db.execute(
         "SELECT dl_status, COUNT(*) FROM libraries GROUP BY dl_status"

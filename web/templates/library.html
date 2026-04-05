@@ -54,6 +54,18 @@
 {% if latest_run and latest_run.status == 'done' and result %}
 <div class="result-summary-card" style="margin-top:20px; padding:16px; background:#f8f9fa; border-radius:8px;">
   <h3 style="margin:0 0 12px 0; font-size:14px;">📊 分析结论</h3>
+  
+  {% if result.get('is_monorepo') %}
+  <div style="margin-bottom:12px; padding:8px; background:#e3f2fd; border-radius:6px; font-size:13px;">
+    📦 <strong>Monorepo</strong> — 
+    {% set mm = result.get('monorepo_metadata', {}) %}
+    {{ mm.get('sub_modules_analyzed', []) | length }} 个子模块
+    {% if mm.get('skipped_modules') %}
+      <span style="color:#666;">（已跳过 {{ mm.get('skipped_modules') | length }} 个辅助模块）</span>
+    {% endif %}
+  </div>
+  {% endif %}
+  
   <div style="display:flex; flex-wrap:wrap; gap:8px;">
     {% set cs = result.get('cloud_services', {}) %}
     {% set pay = result.get('payment', {}) %}
@@ -136,13 +148,26 @@
 
   {% if result %}
   <div style="margin-top:16px;">
+    {% if result.get('is_monorepo') %}
+    <details style="margin-bottom:8px; border:1px solid #2196f3; border-radius:6px;">
+      <summary style="padding:10px 14px; background:#e3f2fd; cursor:pointer; font-size:13px; font-weight:600;">📦 Monorepo 结构</summary>
+      <div style="padding:14px; background:#fafafa;">
+        {% set mm = result.get('monorepo_metadata', {}) %}
+        <p style="margin:0 0 8px 0;"><strong>分析子模块：</strong>{{ mm.get('sub_modules_analyzed', []) | join(', ') }}</p>
+        {% if mm.get('skipped_modules') %}
+        <p style="margin:0; color:#666;"><strong>已跳过：</strong>{% for m in mm.get('skipped_modules', []) %}{{ m.get('name') }} ({{ m.get('reason') }}){% if not loop.last %}, {% endif %}{% endfor %}</p>
+        {% endif %}
+      </div>
+    </details>
+    {% endif %}
+    
     {% set sections = [
       ('cloud_services', '☁️ 云服务拓扑'),
       ('payment', '💰 付费检测'),
       ('license', '📄 许可证'),
       ('mobile_platform', '📱 移动平台'),
-      ('features', '✨ 功能特性'),
       ('ecosystem', '🌐 生态识别'),
+      ('features', '✨ 功能特性'),
       ('dependency_analysis', '📦 依赖分析'),
       ('code_stats', '📊 代码统计'),
     ] %}
@@ -221,7 +246,6 @@ window.PAGE_DATA = {
 };
 
 if (window.PAGE_DATA.runStatus === 'running') {
-  startRunStatusPoll(PAGE_DATA.runId);
   startLiveStatusPoll(PAGE_DATA.runId);
 }
 

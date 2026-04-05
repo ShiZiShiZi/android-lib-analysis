@@ -95,28 +95,64 @@ find . -name "*.c" -o -name "*.cpp" -o -name "*.h" -o -name "CMakeLists.txt" -o 
 
 ## Step 2 — Gradle Maven 依赖
 
+### 2a — 检测是否为 monorepo
+
 ```bash
-# 读取所有 build.gradle 文件
-find . \( -name "build.gradle" -o -name "build.gradle.kts" \) ! -path "*/.gradle/*" ! -path "*/build/*" 2>/dev/null | head -10
-
-# 主 build.gradle
-cat build.gradle 2>/dev/null || cat build.gradle.kts 2>/dev/null || echo "NO_BUILD_GRADLE"
-
-# gradle.properties（解析变量值）
-cat gradle.properties 2>/dev/null | grep -v "^#" | head -30
-
-# settings.gradle（了解多模块结构）
-cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null | head -20
+cat settings.gradle 2>/dev/null || cat settings.gradle.kts 2>/dev/null | head -30
 ```
 
-从 `build.gradle` 提取所有 `implementation`/`api`/`compileOnly`/`runtimeOnly` 依赖条目，每条字段：
-- `name`：`group:artifact`（如 `com.squareup.okhttp3:okhttp`）
-- `version`：版本号（若为变量如 `$okhttpVersion`，从 `gradle.properties` 查找实际值并以 `变量名=实际值` 格式标注）
+若存在 `include ':module-name'` → monorepo，需遍历所有子模块的 build.gradle。
+
+### 2b — 读取 build.gradle 文件
+
+**单库场景**：
+```bash
+cat build.gradle 2>/dev/null || cat build.gradle.kts 2>/dev/null || echo "NO_BUILD_GRADLE"
+cat gradle.properties 2>/dev/null | grep -v "^#" | head -30
+```
+
+**Monorepo 场景**：
+```bash
+# 列出所有子模块的 build.gradle
+find . \( -name "build.gradle" -o -name "build.gradle.kts" \) ! -path "*/.gradle/*" ! -path "*/build/*" 2>/dev/null | grep -v "build/" | head -30
+
+# 读取每个子模块的 build.gradle
+for f in $(find . -name "build.gradle" ! -path "*/.gradle/*" ! -path "*/build/*" 2>/dev/null | head -20); do
+  echo "=== $f ==="
+  cat "$f" | head -100
+done
+
+# 读取根 gradle.properties（可能有版本变量）
+cat gradle.properties 2>/dev/null | grep -v "^#" | head -30
+```
+
+### 2c — 检测 monorepo 内部依赖
+
+```bash
+grep -rn "implementation.*project\|api.*project\|compileOnly.*project" \
+  --include="*.gradle" --include="*.kts" . 2>/dev/null | grep -v "build/" | head -30
+```
+
+---
+
+### 依赖条目字段说明
+
+从所有 build.gradle 文件提取依赖，每条字段：
+
+- `name`：`group:artifact`（如 `com.squareup.okhttp3:okhttp`）或模块名（如 `okhttp`）
+- `version`：版本号（若为变量如 `$okhttpVersion`，从 `gradle.properties` 查找实际值并以 `变量名=实际值` 格式标注）；若为 `project(':xxx')` 则填 `"project(':module-name')"`
 - `dep_type`：`implementation | api | compileOnly | runtimeOnly | testImplementation | debugImplementation | releaseImplementation`
-- `source_type`：`REMOTE`（Maven 坐标）
-- `source_availability`：按共用规则判定
-- `description`：一句话中文说明
+- `source_type`：`REMOTE`（Maven 坐标）或 `LOCAL_PROJECT`（monorepo 内部模块）
+- `source_availability`：按共用规则判定；若为 `LOCAL_PROJECT` 则填 `SOURCE_IN_REPO`
+- `internal_monorepo`：布尔值，标记是否为 monorepo 内部依赖（`project(':xxx')` 形式）
+- `description`：一句话中文说明（如"依赖 monorepo 内部模块 okhttp"）
 - `evidence`：`build.gradle:<行号>`
+
+**内部依赖识别规则**：
+- 依赖声明为 `implementation project(':xxx')` 或 `api project(':xxx')` → `internal_monorepo=true`
+- `source_type` 填 `LOCAL_PROJECT`
+- `version` 填 `"project(':module-name')"`
+- `description` 填 `"依赖 monorepo 内部模块 xxx"`
 
 ---
 
@@ -217,8 +253,19 @@ grep -rn "import android\.hardware\|import android\.media\|import android\.openg
         "dep_type": "implementation",
         "source_type": "REMOTE",
         "source_availability": "OPEN_SOURCE_COMMUNITY",
+        "internal_monorepo": false,
         "description": "OkIO 高效 I/O 库",
         "evidence": "build.gradle:45"
+      },
+      {
+        "name": "okhttp",
+        "version": "project(':okhttp')",
+        "dep_type": "implementation",
+        "source_type": "LOCAL_PROJECT",
+        "source_availability": "SOURCE_IN_REPO",
+        "internal_monorepo": true,
+        "description": "依赖 monorepo 主模块 okhttp",
+        "evidence": "build.gradle:12"
       }
     ],
     "test_dependencies": [
@@ -227,6 +274,7 @@ grep -rn "import android\.hardware\|import android\.media\|import android\.openg
         "version": "5.10.0",
         "dep_type": "testImplementation",
         "source_availability": "OPEN_SOURCE_COMMUNITY",
+        "internal_monorepo": false,
         "description": "JUnit 5 测试框架",
         "evidence": "build.gradle:80"
       }
