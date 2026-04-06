@@ -3,7 +3,7 @@ package.json
 bun.lock
 logs
 repos
-android*.db
+android*.db*
 # Dependencies
 node_modules/
 __pycache__/
