@@ -39,6 +39,7 @@ class ServerInstance:
     completed_tasks: int = 0   # 本次启动后累计完成的任务数（用于重启判断）
     max_tasks: int = 1         # 每次重启允许的最大任务数
     _home_dir: Optional[Path] = None
+    _child_pid: Optional[int] = None  # 记录子进程 PID，防止误杀其他进程
     
     @property
     def url(self) -> str:
@@ -77,7 +78,7 @@ class ServerInstance:
                 local_cache.symlink_to(global_cache)
     
     async def _kill_existing_server(self) -> bool:
-        """通过端口查找并 kill 已存在的 server 进程"""
+        """启动前清理：只 kill 端口上的 opencode 进程，防止误杀 uvicorn 主进程"""
         try:
             result = await asyncio.create_subprocess_exec(
                 "lsof", "-ti", f":{self.port}",
@@ -88,14 +89,34 @@ class ServerInstance:
             pids = stdout.decode().strip().split()
             
             if pids:
+                killed_pids = []
                 for pid in pids:
+                    pid_int = int(pid)
+                    
                     try:
-                        os.kill(int(pid), signal.SIGTERM)
+                        check = await asyncio.create_subprocess_exec(
+                            "ps", "-p", str(pid_int), "-o", "comm=",
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.DEVNULL
+                        )
+                        comm_out, _ = await check.communicate()
+                        proc_name = comm_out.decode().strip()
+                        
+                        if "opencode" in proc_name:
+                            os.kill(pid_int, signal.SIGTERM)
+                            killed_pids.append(str(pid_int))
+                        else:
+                            logger.debug("[server:%d] 跳过非 opencode 进程 (PID: %d, 名称: %s)", 
+                                         self.db_index, pid_int, proc_name)
                     except ProcessLookupError:
                         pass
-                await asyncio.sleep(0.5)
-                logger.info("[server:%d] 已 kill 旧进程 (PID: %s)", self.db_index, ", ".join(pids))
-                return True
+                    except Exception as e:
+                        logger.debug("[server:%d] 检查进程 %d 失败: %s", self.db_index, pid_int, e)
+                
+                if killed_pids:
+                    await asyncio.sleep(0.5)
+                    logger.info("[server:%d] 已 kill 旧 opencode 进程 (PID: %s)", self.db_index, ", ".join(killed_pids))
+                    return True
         except Exception as e:
             logger.debug("[server:%d] 查找旧进程失败: %s", self.db_index, e)
         return False
@@ -118,13 +139,14 @@ class ServerInstance:
             stderr=open(log_file, "w"),
             env=env,
         )
+        self._child_pid = self.proc.pid  # 记录子进程 PID
         
         for _ in range(int(wait_seconds * 10)):
             try:
                 async with httpx.AsyncClient(timeout=2) as client:
                     resp = await client.get(f"{self.url}/agent")
                     if resp.status_code == 200:
-                        logger.info("[server:%d] 已启动，端口 %d", self.db_index, self.port)
+                        logger.info("[server:%d] 已启动，端口 %d (PID: %d)", self.db_index, self.port, self._child_pid)
                         return True
             except Exception:
                 await asyncio.sleep(0.1)
@@ -138,15 +160,35 @@ class ServerInstance:
                         logger.error("[server:%d] %s", self.db_index, line.strip())
             except Exception:
                 pass
+            self._child_pid = None  # 启动失败时清除 PID
             return False
         
         logger.warning("[server:%d] 启动超时", self.db_index)
         return True
     
     async def stop(self) -> None:
-        """停止 server 实例"""
-        await self._kill_existing_server()
+        """停止 server 实例，只 kill 自己启动的子进程"""
+        if self._child_pid:
+            try:
+                os.kill(self._child_pid, signal.SIGTERM)
+                logger.info("[server:%d] 发送 SIGTERM 到子进程 (PID: %d)", self.db_index, self._child_pid)
+                
+                if self.proc:
+                    try:
+                        await asyncio.wait_for(self.proc.wait(), timeout=5)
+                        logger.info("[server:%d] 子进程已正常退出", self.db_index)
+                    except asyncio.TimeoutError:
+                        logger.warning("[server:%d] 子进程未响应 SIGTERM，强制 SIGKILL", self.db_index)
+                        try:
+                            os.kill(self._child_pid, signal.SIGKILL)
+                            await asyncio.wait_for(self.proc.wait(), timeout=2)
+                        except (ProcessLookupError, asyncio.TimeoutError):
+                            pass
+            except ProcessLookupError:
+                logger.info("[server:%d] 子进程已不存在 (PID: %d)", self.db_index, self._child_pid)
+        
         self.proc = None
+        self._child_pid = None
         self.active_tasks = 0
         self.completed_tasks = 0
         logger.info("[server:%d] 已停止", self.db_index)
