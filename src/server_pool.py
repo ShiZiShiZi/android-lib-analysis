@@ -40,6 +40,7 @@ class ServerInstance:
     max_tasks: int = 1         # 每次重启允许的最大任务数
     _home_dir: Optional[Path] = None
     _child_pid: Optional[int] = None  # 记录子进程 PID，防止误杀其他进程
+    _restarting: bool = False  # 防止重复重启
     
     @property
     def url(self) -> str:
@@ -60,7 +61,7 @@ class ServerInstance:
         home = self.home_dir
         
         if home.exists():
-            shutil.rmtree(home)
+            shutil.rmtree(home, ignore_errors=True)
         
         home.mkdir(parents=True, exist_ok=True)
         
@@ -74,8 +75,18 @@ class ServerInstance:
         global_cache = Path.home() / ".local" / "share" / "opencode" / "bin"
         if global_cache.exists():
             local_cache = self.db_path / "bin"
-            if not local_cache.exists():
+            if local_cache.exists() or local_cache.is_symlink():
+                try:
+                    if local_cache.is_symlink():
+                        local_cache.unlink()
+                    else:
+                        shutil.rmtree(local_cache, ignore_errors=True)
+                except Exception:
+                    pass
+            try:
                 local_cache.symlink_to(global_cache)
+            except (FileExistsError, OSError):
+                pass
     
     async def _kill_existing_server(self) -> bool:
         """启动前清理：只 kill 端口上的 opencode 进程，防止误杀 uvicorn 主进程"""
@@ -131,40 +142,47 @@ class ServerInstance:
         env["HOME"] = str(self.home_dir)
         
         log_file = self.home_dir / "server.log"
-        self.proc = await asyncio.create_subprocess_exec(
-            OPENCODE_BIN,
-            "serve",
-            "--port", str(self.port),
-            stdout=open(log_file, "w"),
-            stderr=open(log_file, "w"),
-            env=env,
-        )
-        self._child_pid = self.proc.pid  # 记录子进程 PID
+        log_fh = open(log_file, "w")
         
-        for _ in range(int(wait_seconds * 10)):
-            try:
-                async with httpx.AsyncClient(timeout=2) as client:
-                    resp = await client.get(f"{self.url}/agent")
-                    if resp.status_code == 200:
-                        logger.info("[server:%d] 已启动，端口 %d (PID: %d)", self.db_index, self.port, self._child_pid)
-                        return True
-            except Exception:
-                await asyncio.sleep(0.1)
-        
-        if self.proc.returncode is not None:
-            logger.error("[server:%d] 启动失败，返回码: %d", self.db_index, self.proc.returncode)
-            try:
-                with open(log_file) as f:
-                    lines = f.readlines()[-10:]
-                    for line in lines:
-                        logger.error("[server:%d] %s", self.db_index, line.strip())
-            except Exception:
-                pass
-            self._child_pid = None  # 启动失败时清除 PID
-            return False
-        
-        logger.warning("[server:%d] 启动超时", self.db_index)
-        return True
+        try:
+            self.proc = await asyncio.create_subprocess_exec(
+                OPENCODE_BIN,
+                "serve",
+                "--port", str(self.port),
+                stdout=log_fh,
+                stderr=log_fh,
+                env=env,
+            )
+            self._child_pid = self.proc.pid
+            
+            for _ in range(int(wait_seconds * 10)):
+                try:
+                    async with httpx.AsyncClient(timeout=2) as client:
+                        resp = await client.get(f"{self.url}/agent")
+                        if resp.status_code == 200:
+                            logger.info("[server:%d] 已启动，端口 %d (PID: %d)", self.db_index, self.port, self._child_pid)
+                            return True
+                except Exception:
+                    await asyncio.sleep(0.1)
+            
+            if self.proc.returncode is not None:
+                logger.error("[server:%d] 启动失败，返回码: %d", self.db_index, self.proc.returncode)
+                try:
+                    with open(log_file) as f:
+                        lines = f.readlines()[-10:]
+                        for line in lines:
+                            logger.error("[server:%d] %s", self.db_index, line.strip())
+                except Exception:
+                    pass
+                self._child_pid = None
+                log_fh.close()
+                return False
+            
+            logger.warning("[server:%d] 启动超时", self.db_index)
+            return True
+        except Exception as e:
+            log_fh.close()
+            raise
     
     async def stop(self) -> None:
         """停止 server 实例，只 kill 自己启动的子进程"""
@@ -184,6 +202,8 @@ class ServerInstance:
                             await asyncio.wait_for(self.proc.wait(), timeout=2)
                         except (ProcessLookupError, asyncio.TimeoutError):
                             pass
+                    
+                    await asyncio.sleep(0.1)
             except ProcessLookupError:
                 logger.info("[server:%d] 子进程已不存在 (PID: %d)", self.db_index, self._child_pid)
         
@@ -195,11 +215,23 @@ class ServerInstance:
     
     async def restart(self) -> bool:
         """重启 server 实例"""
-        logger.info("[server:%d] 重启中... (已完成任务: %d)", self.db_index, self.completed_tasks)
-        await self.stop()
-        await asyncio.sleep(0.5)
-        result = await self.start()
-        return result
+        # 如果已在重启中，等待完成
+        while self._restarting:
+            await asyncio.sleep(0.1)
+        
+        # 检查是否已被其他调用者重启完成
+        if self.is_running() and self.completed_tasks < self.max_tasks:
+            return True
+        
+        self._restarting = True
+        try:
+            logger.info("[server:%d] 重启中... (已完成任务: %d)", self.db_index, self.completed_tasks)
+            await self.stop()
+            await asyncio.sleep(0.5)
+            result = await self.start()
+            return result
+        finally:
+            self._restarting = False
     
     def is_running(self) -> bool:
         try:
@@ -247,21 +279,42 @@ class ServerPool:
     async def get_server(self) -> ServerInstance:
         """获取一个可用的 server，会自动重启需要重启的 server"""
         async with self._lock:
-            min_active = min(s.active_tasks for s in self.servers)
+            # 优先选择非重启中的 server
+            available = [s for s in self.servers if not s._restarting]
+            if not available:
+                # 所有 server 都在重启，等待任意一个完成
+                logger.warning("[pool] 所有 server 都在重启中，等待...")
+                while not any(s._restarting == False for s in self.servers):
+                    await asyncio.sleep(0.1)
+                available = [s for s in self.servers if not s._restarting]
             
-            for server in self.servers:
+            min_active = min(s.active_tasks for s in available)
+            
+            for server in available:
                 if server.active_tasks == min_active:
+                    # 确保不在重启中
+                    while server._restarting:
+                        await asyncio.sleep(0.1)
+                    
                     if server.should_restart():
                         await server.restart()
                     server.active_tasks += 1
                     return server
             
-            return self.servers[0]
+            # fallback: 等待并返回第一个可用 server
+            server = available[0]
+            while server._restarting:
+                await asyncio.sleep(0.1)
+            server.active_tasks += 1
+            return server
     
     def release_server(self, server: ServerInstance) -> None:
         """释放 server（任务完成后调用）"""
         server.active_tasks = max(0, server.active_tasks - 1)
         server.completed_tasks += 1
+        
+        if server._restarting:
+            return
         
         if server.completed_tasks >= server.max_tasks and server.active_tasks == 0:
             asyncio.create_task(self._restart_server_async(server))
