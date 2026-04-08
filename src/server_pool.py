@@ -218,17 +218,23 @@ class ServerInstance:
         # 如果已在重启中，等待完成
         while self._restarting:
             await asyncio.sleep(0.1)
-        
+
         # 检查是否已被其他调用者重启完成
         if self.is_running() and self.completed_tasks < self.max_tasks:
             return True
-        
+
         self._restarting = True
         try:
             logger.info("[server:%d] 重启中... (已完成任务: %d)", self.db_index, self.completed_tasks)
             await self.stop()
             await asyncio.sleep(0.5)
             result = await self.start()
+            # 重启后额外验证端口就绪，确保稳定
+            if result:
+                for _ in range(20):
+                    if self.is_running():
+                        break
+                    await asyncio.sleep(0.2)
             return result
         finally:
             self._restarting = False
@@ -278,57 +284,27 @@ class ServerPool:
     
     async def get_server(self) -> ServerInstance:
         """获取一个可用的 server，会自动重启需要重启的 server"""
-        async with self._lock:
-            # 优先选择非重启中的 server
-            available = [s for s in self.servers if not s._restarting]
-            if not available:
-                # 所有 server 都在重启，等待任意一个完成
-                logger.warning("[pool] 所有 server 都在重启中，等待...")
-                while not any(s._restarting == False for s in self.servers):
-                    await asyncio.sleep(0.1)
+        while True:
+            async with self._lock:
                 available = [s for s in self.servers if not s._restarting]
-            
-            min_active = min(s.active_tasks for s in available)
-            
-            for server in available:
-                if server.active_tasks == min_active:
-                    # 确保不在重启中
-                    while server._restarting:
-                        await asyncio.sleep(0.1)
-                    
-                    if server.should_restart():
-                        await server.restart()
-                    server.active_tasks += 1
-                    return server
-            
-            # fallback: 等待并返回第一个可用 server
-            server = available[0]
-            while server._restarting:
-                await asyncio.sleep(0.1)
-            server.active_tasks += 1
-            return server
+                if available:
+                    min_active = min(s.active_tasks for s in available)
+                    for server in available:
+                        if server.active_tasks == min_active:
+                            if server.should_restart():
+                                await server.restart()
+                            server.active_tasks += 1
+                            return server
+            # 所有 server 都在重启，释放锁后等待
+            logger.warning("[pool] 所有 server 都在重启中，等待...")
+            await asyncio.sleep(0.1)
     
     def release_server(self, server: ServerInstance) -> None:
         """释放 server（任务完成后调用）"""
         server.active_tasks = max(0, server.active_tasks - 1)
         server.completed_tasks += 1
-        
-        if server._restarting:
-            return
-        
-        if server.completed_tasks >= server.max_tasks and server.active_tasks == 0:
-            asyncio.create_task(self._restart_server_async(server))
+        # 不主动触发异步重启，由 get_server 按需重启，避免双重重启竞态
     
-    async def _restart_server_async(self, server: ServerInstance) -> None:
-        """异步重启 server"""
-        try:
-            await server.restart()
-            print(f"[server:{server.db_index}] 任务完成后自动重启成功")
-            logger.info("[server:%d] 任务完成后自动重启成功", server.db_index)
-        except Exception as e:
-            print(f"[server:{server.db_index}] 自动重启失败: {e}")
-            logger.error("[server:%d] 自动重启失败: %s", server.db_index, e)
-
 
 _pool: Optional[ServerPool] = None
 
